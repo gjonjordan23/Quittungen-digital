@@ -49,6 +49,8 @@ body{background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-fo
 .chip{border:1px solid var(--line-strong);background:var(--card);color:var(--muted);padding:6px 12px;border-radius:999px;
   font-size:12.5px;cursor:pointer;font-weight:500;transition:.12s;font-family:var(--mono)}
 .chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.chip.year{border-color:var(--accent);color:var(--accent);font-weight:700}
+.chip.year.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .total{text-align:right}
 .total .lbl{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:600}
 .total .val{font-family:var(--mono);font-size:27px;font-weight:600;color:var(--money);line-height:1.1;
@@ -119,6 +121,8 @@ body{background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-fo
   .pr-table td{padding:6px 4px;border-bottom:1px solid #ddd;vertical-align:top}
   .pr-r{text-align:right;font-variant-numeric:tabular-nums}
   .pr-total td{border-top:2px solid #000;border-bottom:3px double #000;font-weight:700;font-size:13px}
+  .pr-group td{background:#f0efe8;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding-top:10px}
+  .pr-sub td{border-top:1px solid #000;font-weight:600}
   .pr-appendix{margin-top:26px;page-break-before:always}
   .pr-appendix h3{font-size:13px;border-bottom:1px solid #000;padding-bottom:4px;margin-bottom:10px}
   .pr-belege{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -191,8 +195,11 @@ const DEFAULT_SETTINGS = {kmRate:0.7, lunchRate:25, apiKey:"", model:"claude-hai
 let settings = loadSettings();
 let expenses = [];      // records
 let receipts = {};      // id -> dataURL
-let filter = "";        // "YYYY-MM" or ""
+let filter = "";        // "YYYY-MM" (month) or "YYYY" (whole year) or ""
 let openImage = null;   // pending image in modal
+const isYear = f => /^\d{4}$/.test(f||"");
+const inFilter = (date,f)=> isYear(f) ? (date||"").slice(0,4)===f : mKey(date)===f;
+const yLabel = f => isYear(f) ? ("Jahr "+f) : mLabel(f);
 
 /* ============================================================ IndexedDB */
 let _db;
@@ -329,23 +336,30 @@ function compute(d){
 /* ============================================================ render */
 function render(){
   const months=[...new Set(expenses.map(e=>mKey(e.date)))].sort().reverse();
-  if(filter && !months.includes(filter)) filter = months[0]||"";
+  const years=[...new Set(expenses.map(e=>(e.date||"").slice(0,4)).filter(Boolean))].sort().reverse();
+  const allKeys=[...years,...months];
+  if(filter && !allKeys.includes(filter)) filter = months[0]||"";
   if(!filter && months.length) filter = months.includes(mKey(todayISO()))?mKey(todayISO()):months[0];
 
-  // months
+  // chips: years first (highlighted style), then months
   const mWrap=document.getElementById("months");
   mWrap.innerHTML="";
   if(months.length===0){ mWrap.appendChild(el(`<span class="chip on">${mLabel(filter||mKey(todayISO()))}</span>`)); }
+  years.forEach(y=>{
+    const c=el(`<button class="chip year${y===filter?' on':''}">${y}</button>`);
+    c.onclick=()=>{filter=y;render();};
+    mWrap.appendChild(c);
+  });
   months.forEach(m=>{
     const c=el(`<button class="chip${m===filter?' on':''}">${mLabel(m)}</button>`);
     c.onclick=()=>{filter=m;render();};
     mWrap.appendChild(c);
   });
 
-  const list=expenses.filter(e=>filter?mKey(e.date)===filter:true).sort((a,b)=>a.date<b.date?1:-1);
+  const list=expenses.filter(e=>filter?inFilter(e.date,filter):true).sort((a,b)=>a.date<b.date?1:-1);
   const total=list.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
 
-  document.getElementById("totalLbl").textContent="Total "+(filter?mLabel(filter):"");
+  document.getElementById("totalLbl").textContent="Total "+(filter?yLabel(filter):"");
   document.getElementById("totalVal").innerHTML=`<small>CHF</small>${chf(total)}`;
 
   const led=document.getElementById("ledger");
@@ -566,7 +580,7 @@ function openSettings(){
 
 /* ============================================================ exports */
 function currentList(){
-  return expenses.filter(e=>filter?mKey(e.date)===filter:true).sort((a,b)=>a.date<b.date?-1:1);
+  return expenses.filter(e=>filter?inFilter(e.date,filter):true).sort((a,b)=>a.date<b.date?-1:1);
 }
 function exportSpreadsheet(){
   const list=currentList();
@@ -590,12 +604,37 @@ function exportSpreadsheet(){
 function buildReport(){
   const list=currentList();
   const total=list.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
-  const rows=list.map(e=>`<tr><td>${dCH(e.date)}</td><td>${escapeHtml(e.categoryLabel)}</td><td>${escapeHtml(e.description)}</td><td>${escapeHtml(e.merchant)}</td><td class="pr-r">${e.km??""}</td><td class="pr-r">${chf(e.amountCHF)}</td></tr>`).join("");
+  const rowHtml=e=>`<tr><td>${dCH(e.date)}</td><td>${escapeHtml(e.categoryLabel)}</td><td>${escapeHtml(e.description)}</td><td>${escapeHtml(e.merchant)}</td><td class="pr-r">${e.km??""}</td><td class="pr-r">${chf(e.amountCHF)}</td></tr>`;
+
+  let body="";
+  if(isYear(filter)){
+    // group by month, ascending, with a subtotal per month + category summary
+    const byMonth={};
+    list.forEach(e=>{(byMonth[mKey(e.date)]=byMonth[mKey(e.date)]||[]).push(e);});
+    Object.keys(byMonth).sort().forEach(mk=>{
+      const items=byMonth[mk];
+      const sub=items.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
+      body+=`<tr class="pr-group"><td colspan="6">${mLabel(mk)}</td></tr>`;
+      body+=items.map(rowHtml).join("");
+      body+=`<tr class="pr-sub"><td colspan="5">Zwischentotal ${mLabel(mk)}</td><td class="pr-r">CHF ${chf(sub)}</td></tr>`;
+    });
+    // category summary for the year
+    const byCat={};
+    list.forEach(e=>{byCat[e.categoryLabel]=(byCat[e.categoryLabel]||0)+(Number(e.amountCHF)||0);});
+    var catSummary=`<div class="pr-appendix" style="page-break-before:auto"><h3>Zusammenfassung nach Kategorie</h3>
+      <table class="pr-table"><tbody>${Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>${escapeHtml(k)}</td><td class="pr-r">CHF ${chf(v)}</td></tr>`).join("")}
+      <tr class="pr-total"><td>Total ${filter}</td><td class="pr-r">CHF ${chf(total)}</td></tr></tbody></table></div>`;
+  } else {
+    body=list.map(rowHtml).join("");
+    var catSummary="";
+  }
+
   const belege=list.filter(e=>e.hasReceipt&&receipts[e.id]).map(e=>`<div class="pr-beleg"><div class="cap">${dCH(e.date)} · ${escapeHtml(e.description)} · CHF ${chf(e.amountCHF)}</div><img src="${receipts[e.id]}"></div>`).join("");
   document.getElementById("printReport").innerHTML=`
-    <div class="pr-h"><h2>Spesenabrechnung</h2><div style="text-align:right;font-size:12px">${filter?mLabel(filter):"Alle Perioden"}<br>erstellt ${dCH(todayISO())}</div></div>
+    <div class="pr-h"><h2>Spesenabrechnung${isYear(filter)?" "+filter:""}</h2><div style="text-align:right;font-size:12px">${filter?yLabel(filter):"Alle Perioden"}<br>erstellt ${dCH(todayISO())}</div></div>
     <table class="pr-table"><thead><tr><th>Datum</th><th>Kategorie</th><th>Beschreibung</th><th>Händler</th><th class="pr-r">km</th><th class="pr-r">Betrag CHF</th></tr></thead>
-    <tbody>${rows}<tr class="pr-total"><td colspan="5">Total</td><td class="pr-r">CHF ${chf(total)}</td></tr></tbody></table>
+    <tbody>${body}<tr class="pr-total"><td colspan="5">Total ${filter?yLabel(filter):""}</td><td class="pr-r">CHF ${chf(total)}</td></tr></tbody></table>
+    ${catSummary}
     ${belege?`<div class="pr-appendix"><h3>Belege</h3><div class="pr-belege">${belege}</div></div>`:""}`;
   window.print();
 }
