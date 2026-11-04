@@ -17,6 +17,8 @@ const b64url = s => Buffer.from(s).toString("base64").replace(/\+/g, "-").replac
 (async () => {
   const gas = createGas();
   gas.ctx.einrichten();
+  // Wie die echte Tabelle: angelegt mit der ersten Version (18 Spalten, ohne Beleg-Link/Bezahlt mit)
+  gas.sheet("Spesen")._rows[0] = gas.sheet("Spesen")._rows[0].slice(0, 18);
   const PIN = gas.props.PIN;
   const srv = await startServers(gas);
   const invite = (pin = PIN) => srv.appUrl + "#verbinden=" + b64url(JSON.stringify({ u: srv.apiUrl, p: pin }));
@@ -110,6 +112,9 @@ const b64url = s => Buffer.from(s).toString("base64").replace(/\+/g, "-").replac
   check("alle lokalen Spesen in der Tabelle", rows().length === expectLocal, rows().length);
   check("«Erfasst von» bei alter Spese nachgetragen", rows().every(r => r[11] === "Büro"));
   check("Protokoll: je Spese «neu»", logRows().filter(r => r[1] === "neu").length === expectLocal);
+  const head = gas.sheet("Spesen")._rows[0];
+  check("alte Tabelle: Spalten «Beleg-Link», «Bezahlt mit» hinten ergänzt", head.length === 20 && head[18] === "Beleg-Link" && head[19] === "Bezahlt mit", head.slice(17));
+  check("erste 18 Spaltentitel unverändert", head[0] === "ID" && head[12] === "Beleg (Drive-Datei)" && head[17] === "Version");
 
   // ---------------------------------------------------------------- 5
   console.log("\n5. Spese mit Foto");
@@ -132,6 +137,8 @@ const b64url = s => Buffer.from(s).toString("base64").replace(/\+/g, "-").replac
   check("Formel-Schutz: Text beginnt mit Apostroph", r5 && String(r5[4]).startsWith("'="), r5 && r5[4]);
   check("Server-Zeitstempel gesetzt", r5 && isDate(r5[15]) && isDate(r5[16]));
   check("Version 1, Status aktiv", r5 && r5[17] === 1 && r5[14] === "aktiv");
+  check("Beleg-Link zeigt auf die Drive-Datei", r5 && r5[18] === "https://drive.google.com/file/d/" + r5[12] + "/view", r5 && r5[18]);
+  check("neue Spese standardmässig «privat»", r5 && r5[19] === "privat", r5 && r5[19]);
 
   // ---------------------------------------------------------------- 6
   console.log("\n6. Zweites Gerät: sehen, bearbeiten, löschen");
@@ -197,6 +204,35 @@ const b64url = s => Buffer.from(s).toString("base64").replace(/\+/g, "-").replac
   check("Schlüssel nur im Backend (Header von UrlFetchApp)", call && call.opts.headers["x-api-key"] === "sk-ant-test");
   check("Frontend kennt keinen Schlüssel", !(await B.page.evaluate(() => JSON.stringify(settings) + document.documentElement.outerHTML)).includes("sk-ant-test"));
   await B.page.click(".sheet [data-x]");
+
+  // ---------------------------------------------------------------- 11
+  console.log("\n11. Bezahlt mit Firmenkarte");
+  await B.page.reload(); await B.page.waitForFunction(() => connected());
+  await B.page.click("#btnManual");
+  await B.page.fill('.sheet [data-f="description"]', "Tanken Firmenauto");
+  await B.page.fill('.sheet [data-f="amount"]', "80");
+  await B.page.selectOption('.sheet [data-f="paidBy"]', "firma");
+  await B.page.click(".sheet [data-save]");
+  await until(() => rows().some(r => r[4] === "Tanken Firmenauto"));
+  const r11 = rows().find(r => r[4] === "Tanken Firmenauto");
+  check("Spalte «Bezahlt mit» = firma", r11 && r11[19] === "firma", r11 && r11[19]);
+  check("Protokoll enthält paidBy", logRows().some(r => r[2] === r11[0] && r[5].includes('"paidBy":"firma"')));
+  check("Spese ohne Foto: Beleg-Link leer", r11 && r11[18] === "");
+  await B.page.evaluate(() => { filter = mKey(todayISO()); whoFilter = ""; render(); });
+  const sub = await B.page.textContent("#totalSub");
+  check("Total zeigt Aufteilung privat / Firmenkarte", /Rückerstattung privat .*Firmenkarte 80\.00/.test(sub), sub);
+  check("Liste zeigt «Firmenkarte»", (await B.page.textContent("#ledger")).includes("Firmenkarte"));
+  const csv = await B.page.evaluate(async () => {
+    let out = ""; window.shareOrDownload = async b => { out = await b.text(); return true; };
+    exportSpreadsheet(); await new Promise(r => setTimeout(r, 100)); return out;
+  });
+  check("Export: Spalte «Bezahlt mit» und Zeile «davon Firmenkarte»", csv.includes("Bezahlt mit") && csv.includes("Firmenkarte") && /davon Firmenkarte;80/.test(csv), csv.slice(0, 300));
+  await B.page.evaluate(() => openEntry(expenses.find(e => e.description === "Tanken Firmenauto")));
+  check("Bearbeiten zeigt gespeicherten Wert", (await B.page.inputValue('.sheet [data-f="paidBy"]')) === "firma");
+  await B.page.selectOption('.sheet [data-f="paidBy"]', "privat");
+  await B.page.click(".sheet [data-save]");
+  await until(() => rows().some(r => r[4] === "Tanken Firmenauto" && r[17] === 2));
+  check("Umstellen auf privat ergibt Version 2", rows().find(r => r[4] === "Tanken Firmenauto")[19] === "privat");
 
   // ---------------------------------------------------------------- 10
   console.log("\n10. Import einer fehlerhaften Spesen-Datei");

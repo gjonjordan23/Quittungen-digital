@@ -17,13 +17,16 @@ const HEAD = [
   "ID", "Datum", "Kategorie-ID", "Kategorie", "Beschreibung", "Händler", "km",
   "Betrag", "Währung", "Kurs", "Betrag CHF", "Erfasst von",
   "Beleg (Drive-Datei)", "Beleg SHA-256", "Status",
-  "Gespeichert am (Server)", "Zuletzt geändert", "Version"
+  "Gespeichert am (Server)", "Zuletzt geändert", "Version",
+  "Beleg-Link", "Bezahlt mit"   // neue Spalten nur hinten anhängen
 ];
 const C = { id:0, date:1, catId:2, cat:3, desc:4, merchant:5, km:6, amount:7, cur:8, rate:9,
-  chf:10, who:11, file:12, hash:13, status:14, created:15, updated:16, version:17 };
+  chf:10, who:11, file:12, hash:13, status:14, created:15, updated:16, version:17,
+  link:18, paidBy:19 };
+const PAID_BY = ["privat", "firma"];
 const LOG_HEAD = ["Zeitpunkt", "Aktion", "ID", "Wer", "Vorher", "Nachher"];
 const BUSINESS = ["date","categoryId","categoryLabel","description","merchant","km",
-  "amount","currency","rate","amountCHF","who"];
+  "amount","currency","rate","amountCHF","who","paidBy"];
 
 /* ================================================================ Einrichtung */
 
@@ -121,6 +124,7 @@ function saveItem_(req) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(it.date)) throw new Error("Datum ungültig");
 
   const sh = sheet_("Spesen");
+  ensureColumns_(sh);
   const rowIdx = findRow_(sh, it.id);
   const now = new Date();
   let old = null, fileId = "", hash = "";
@@ -150,7 +154,8 @@ function saveItem_(req) {
     it.id, it.date, it.categoryId, it.categoryLabel, it.description, it.merchant,
     it.km == null ? "" : it.km, it.amount, it.currency, it.rate == null ? "" : it.rate,
     it.amountCHF, it.who, fileId, hash, "aktiv",
-    old ? old.createdRaw : now, now, version
+    old ? old.createdRaw : now, now, version,
+    driveLink_(fileId), it.paidBy
   ];
   if (rowIdx > 0) sh.getRange(rowIdx, 1, 1, HEAD.length).setValues([row]);
   else sh.appendRow(row);
@@ -269,7 +274,8 @@ function fromRow_(r) {
     createdRaw: r[C.created],
     createdAt: r[C.created] instanceof Date ? r[C.created].toISOString() : String(r[C.created] || ""),
     updatedAt: r[C.updated] instanceof Date ? r[C.updated].toISOString() : String(r[C.updated] || ""),
-    version: Number(r[C.version]) || 1
+    version: Number(r[C.version]) || 1,
+    paidBy: PAID_BY.indexOf(String(r[C.paidBy] || "")) >= 0 ? String(r[C.paidBy]) : ""
   };
 }
 
@@ -277,7 +283,7 @@ function clientItem_(o) {
   return {
     id:o.id, date:o.date, categoryId:o.categoryId, categoryLabel:o.categoryLabel,
     description:o.description, merchant:o.merchant, km:o.km, amount:o.amount,
-    currency:o.currency, rate:o.rate, amountCHF:o.amountCHF, who:o.who,
+    currency:o.currency, rate:o.rate, amountCHF:o.amountCHF, who:o.who, paidBy:o.paidBy,
     hasReceipt: !!o.fileId, receiptHash:o.receiptHash,
     createdAt:o.createdAt, updatedAt:o.updatedAt, version:o.version
   };
@@ -297,7 +303,8 @@ function clean_(it) {
     currency: txt_(it.currency || "CHF", 3, true).toUpperCase(),
     rate: num(it.rate),
     amountCHF: num(it.amountCHF) || 0,
-    who: txt_(it.who, 60)
+    who: txt_(it.who, 60),
+    paidBy: PAID_BY.indexOf(String(it.paidBy || "")) >= 0 ? String(it.paidBy) : ""
   };
 }
 
@@ -325,6 +332,26 @@ function pick_(o) {
 function fmtDate_(v) {
   if (v instanceof Date) return Utilities.formatDate(v, TZ, "yyyy-MM-dd");
   return String(v || "").slice(0, 10);
+}
+
+function driveLink_(fileId) {
+  return fileId ? "https://drive.google.com/file/d/" + fileId + "/view" : "";
+}
+
+/**
+ * Ergänzt fehlende Spaltentitel hinten (Tabellen aus einer älteren Version) und trägt
+ * dabei einmalig die Beleg-Links für bestehende Zeilen nach. Ändert keine Geschäftsdaten.
+ */
+function ensureColumns_(sh) {
+  const head = sh.getRange(1, 1, 1, HEAD.length).getValues()[0];
+  if (head[C.link] === HEAD[C.link] && head[C.paidBy] === HEAD[C.paidBy]) return;
+  sh.getRange(1, 1, 1, HEAD.length).setValues([HEAD]).setFontWeight("bold");
+  const last = sh.getLastRow();
+  if (last < 2) return;
+  const files = sh.getRange(2, C.file + 1, last - 1, 1).getValues();
+  const links = sh.getRange(2, C.link + 1, last - 1, 1).getValues();
+  const out = files.map((f, i) => [links[i][0] || driveLink_(String(f[0] || ""))]);
+  sh.getRange(2, C.link + 1, last - 1, 1).setValues(out);
 }
 
 function log_(action, id, who, before, after) {

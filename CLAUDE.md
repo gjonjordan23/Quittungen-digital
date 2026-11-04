@@ -57,10 +57,18 @@ Funktionen ohne Rückfrage.
   günstige Modell aktuell ist.
 - Von Hand auszuführen: `einrichten`, `zugangscodeAnzeigen`, `zugangscodeErneuern`.
 - `doPost`-Aktionen: `ping`, `list`, `save`, `delete`, `image`, `scan`.
-- Tabelle, Blatt «Spesen», 18 Spalten in dieser Reihenfolge: ID, Datum, Kategorie-ID,
+- Tabelle, Blatt «Spesen», 20 Spalten in dieser Reihenfolge: ID, Datum, Kategorie-ID,
   Kategorie, Beschreibung, Händler, km, Betrag, Währung, Kurs, Betrag CHF, Erfasst von,
   Beleg (Drive-Datei), Beleg SHA-256, Status, Gespeichert am (Server), Zuletzt geändert,
-  Version. Blatt «Protokoll»: Zeitpunkt, Aktion, ID, Wer, Vorher, Nachher.
+  Version, Beleg-Link, Bezahlt mit. Blatt «Protokoll»: Zeitpunkt, Aktion, ID, Wer, Vorher,
+  Nachher.
+- Die echte Tabelle wurde mit 18 Spalten angelegt. `ensureColumns_()` ergänzt fehlende
+  Spaltentitel hinten beim nächsten Speichern und trägt Beleg-Links einmalig nach.
+- «Bezahlt mit» (`paidBy`): `privat` (wird zurückerstattet), `firma` (Firmenkarte) oder
+  leer (ältere Einträge). Gehört zu den Geschäftsfeldern (Änderung → neue Version +
+  Protokoll). Die App zeigt im Total, Excel und Bericht die Aufteilung.
+- Die Firma ist nicht MWST-pflichtig: keine MWST-Felder nötig. KI-Erkennung wird bewusst
+  nicht genutzt (kein `ANTHROPIC_KEY`).
 - Fotos: Drive `<Ablage>/Belege/<Jahr>/<Datum>_<Wer>_<Händler>_<Hash8>.jpg`.
 - KI-Erkennung (`scan`) nur im Backend; der Anthropic-Schlüssel kommt nie ins Frontend.
 - Schreibzugriffe unter `LockService`. Texte, die mit `= + - @` beginnen, bekommen ein
@@ -78,7 +86,9 @@ Funktionen ohne Rückfrage.
 3. Spaltenreihenfolge, Blattnamen, Kategorie-IDs und IndexedDB-Name nicht ändern – es
    gibt echte Daten. Neue Spalten nur hinten anhängen; IndexedDB-Upgrades nur additiv.
 4. Die App bleibt **eine** `index.html` ohne Build-Schritt.
-5. Änderungen an `Code.gs` wirken erst nach «Bereitstellen → Bereitstellungen verwalten
+5. Bei Änderungen an beiden Dateien zuerst `Code.gs` bereitstellen lassen, dann erst
+   `index.html` auf main bringen (neues Frontend an altem Backend verliert neue Felder).
+6. Änderungen an `Code.gs` wirken erst nach «Bereitstellen → Bereitstellungen verwalten
    → Stift → Version: Neue Version → Bereitstellen» (URL bleibt gleich). Das dem Nutzer
    bei jeder Änderung sagen, zusammen mit: welche Datei wo hochladen bzw. ersetzen.
 

@@ -56,6 +56,8 @@ body{background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-fo
 .total .val{font-family:var(--mono);font-size:27px;font-weight:600;color:var(--money);line-height:1.1;
   border-bottom:3px double var(--money);padding-bottom:2px;display:inline-block;margin-top:3px}
 .total .val small{font-size:14px;font-weight:500;margin-right:4px}
+.total .sub{font-size:11.5px;color:var(--muted);margin-top:6px;font-family:var(--mono)}
+.pill.firma{color:var(--ink);border-color:var(--line-strong);background:#fff}
 
 .ledger{margin-top:14px;border:1px solid var(--line);border-radius:14px;background:var(--card);overflow:hidden}
 .row{display:grid;grid-template-columns:52px 1fr auto;gap:14px;align-items:center;padding:14px 16px;
@@ -166,7 +168,7 @@ body{background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-fo
   <div class="people" id="people"></div>
   <div class="sumbar">
     <div class="months" id="months"></div>
-    <div class="total"><div class="lbl" id="totalLbl">Total</div><div class="val" id="totalVal"><small>CHF</small>0.00</div></div>
+    <div class="total"><div class="lbl" id="totalLbl">Total</div><div class="val" id="totalVal"><small>CHF</small>0.00</div><div class="sub" id="totalSub"></div></div>
   </div>
 
   <div class="ledger" id="ledger"></div>
@@ -198,6 +200,14 @@ const CATEGORIES = [
 ];
 const catById = id => CATEGORIES.find(c=>c.id===id) || CATEGORIES[CATEGORIES.length-1];
 const DEFAULT_SETTINGS = {kmRate:0.7, lunchRate:25, who:"", apiUrl:"", pin:"", scan:false};
+// Wer hat bezahlt? "privat" = wird zurückerstattet, "firma" = Firmenkarte, "" = ohne Angabe (ältere Einträge)
+const PAID_BY = {privat:"Privat (Rückerstattung)", firma:"Firmenkarte"};
+const validPaidBy = v => (v in PAID_BY) ? v : "";
+function paidSplit(list){
+  const sum=f=>list.filter(f).reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
+  return {privat:sum(e=>e.paidBy==="privat"), firma:sum(e=>e.paidBy==="firma"), offen:sum(e=>!validPaidBy(e.paidBy)),
+    allPrivat:list.every(e=>e.paidBy==="privat")};
+}
 let settings = loadSettings();
 let expenses = [];     // records (cache)
 let receipts = {};     // id -> dataURL (local image cache)
@@ -486,6 +496,10 @@ function render(){
   const total=list.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
   document.getElementById("totalLbl").textContent="Total "+(filter?yLabel(filter):"")+(whoFilter?" · "+whoFilter:"");
   document.getElementById("totalVal").innerHTML=`<small>CHF</small>${chf(total)}`;
+  const sp=paidSplit(list);
+  document.getElementById("totalSub").textContent = (list.length && !sp.allPrivat)
+    ? `Rückerstattung privat ${chf(sp.privat)} · Firmenkarte ${chf(sp.firma)}`+(sp.offen?` · ohne Angabe ${chf(sp.offen)}`:"")
+    : "";
 
   const led=document.getElementById("ledger");
   led.innerHTML="";
@@ -503,6 +517,7 @@ function render(){
           <span class="pill" data-cat></span>
           ${e.km?`<span class="pill km">${escapeHtml(e.km)} km</span>`:""}
           ${e.who?`<span class="pill who" data-who></span>`:""}
+          ${e.paidBy==="firma"?`<span class="pill firma">Firmenkarte</span>`:""}
           ${e.pending?`<span class="pill wait">wird gesendet</span>`:""}
           ${connected()&&!e.synced&&!e.pending?`<span class="pill wait">nur lokal</span>`:""}
           ${e.merchant?`<span class="mch"></span>`:""}
@@ -531,8 +546,8 @@ function openEntry(existing, initialFile){
     id:existing.id,date:existing.date,categoryId:existing.categoryId,description:existing.description||"",
     merchant:existing.merchant||"",currency:existing.currency||"CHF",
     amount:existing.amount!=null?String(existing.amount):"",km:existing.km!=null?String(existing.km):"",
-    rate:existing.rate!=null?String(existing.rate):""
-  } : {id:null,date:todayISO(),categoryId:"verpflegung",description:"",merchant:"",currency:"CHF",amount:"",km:"",rate:""};
+    rate:existing.rate!=null?String(existing.rate):"", paidBy:validPaidBy(existing.paidBy)
+  } : {id:null,date:todayISO(),categoryId:"verpflegung",description:"",merchant:"",currency:"CHF",amount:"",km:"",rate:"",paidBy:"privat"};
 
   const scrim=el(`<div class="scrim"></div>`);
   const opts=CATEGORIES.map(c=>`<option value="${c.id}"${c.id===d.categoryId?" selected":""}>${c.label}</option>`).join("");
@@ -550,6 +565,10 @@ function openEntry(existing, initialFile){
     </div>
     <div data-amountblock></div>
     <div data-rateblock></div>
+    <div class="field"><label>Bezahlt mit</label><select class="select" data-f="paidBy">
+      ${d.paidBy?"":'<option value="" selected>– bitte wählen –</option>'}
+      ${Object.entries(PAID_BY).map(([v,l])=>`<option value="${v}"${v===d.paidBy?" selected":""}>${l}</option>`).join("")}
+    </select></div>
     <div class="field"><label>Beleg</label>
       <input type="file" accept="image/*" data-file style="display:none">
       <button class="act" style="width:100%" data-addfoto><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg> <span data-fotolbl>${openImage?"Anderes Foto":"Foto hinzufügen"}</span></button>
@@ -607,7 +626,7 @@ function openEntry(existing, initialFile){
     return {
       id:d.id,date:val("date")||d.date,categoryId:val("categoryId"),description:val("description"),
       merchant:val("merchant"),currency:(val("currency")||d.currency),amount:val("amount"),
-      km:val("km")||d.km,rate:val("rate")||d.rate
+      km:val("km")||d.km,rate:val("rate")||d.rate,paidBy:validPaidBy(val("paidBy"))
     };
   }
   get('[data-f="categoryId"]').addEventListener("change",e=>{d.categoryId=e.target.value;renderAmount();});
@@ -660,6 +679,7 @@ function openEntry(existing, initialFile){
       currency:cur,amount:Number(amount.toFixed(2)),amountCHF:Number((amountCHF||0).toFixed(2)),
       km:cat.type==="km"?(parseNum(dd.km)||0):null,rate:cur==="CHF"?null:rate,
       who:existing?(existing.who||settings.who):settings.who,
+      paidBy:dd.paidBy,
       hasReceipt:!!openImage||!!(existing&&existing.hasReceipt),
       createdAt:existing?existing.createdAt:Date.now(),
       synced:existing?!!existing.synced:false, pending:false
@@ -802,13 +822,19 @@ function exportSpreadsheet(){
   const list=currentList();
   if(!list.length) return toast("Keine Spesen im gewählten Zeitraum.");
   const total=list.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
-  const header=["Datum","Erfasst von","Kategorie","Beschreibung","Händler","km","Betrag","Währung","Kurs","Betrag CHF"];
-  const rows=list.map(e=>[dCH(e.date),e.who||"",e.categoryLabel,e.description,e.merchant,e.km??"",e.amount,e.currency,e.rate??"",e.amountCHF]);
-  rows.push(["","","","","","","","","TOTAL CHF",Number(total.toFixed(2))]);
+  const header=["Datum","Erfasst von","Kategorie","Beschreibung","Händler","km","Betrag","Währung","Kurs","Betrag CHF","Bezahlt mit"];
+  const rows=list.map(e=>[dCH(e.date),e.who||"",e.categoryLabel,e.description,e.merchant,e.km??"",e.amount,e.currency,e.rate??"",e.amountCHF,PAID_BY[e.paidBy]||""]);
+  rows.push(["","","","","","","","","TOTAL CHF",Number(total.toFixed(2)),""]);
+  const sp=paidSplit(list);
+  if(!sp.allPrivat){
+    rows.push(["","","","","","","","","davon Rückerstattung privat",Number(sp.privat.toFixed(2)),""]);
+    rows.push(["","","","","","","","","davon Firmenkarte",Number(sp.firma.toFixed(2)),""]);
+    if(sp.offen) rows.push(["","","","","","","","","davon ohne Angabe",Number(sp.offen.toFixed(2)),""]);
+  }
   const fname=`Spesen_${filter||"alle"}${whoFilter?"_"+whoFilter:""}`;
   if(window.XLSX){
     const ws=XLSX.utils.aoa_to_sheet([header,...rows]);
-    ws["!cols"]=[{wch:11},{wch:12},{wch:22},{wch:26},{wch:20},{wch:6},{wch:10},{wch:8},{wch:9},{wch:12}];
+    ws["!cols"]=[{wch:11},{wch:12},{wch:22},{wch:26},{wch:20},{wch:6},{wch:10},{wch:8},{wch:24},{wch:12},{wch:22}];
     const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Spesen");
     const out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
     shareOrDownload(new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}),fname+".xlsx");
@@ -827,7 +853,7 @@ async function buildReport(){
     for(const e of missing) await ensureImage(e);
   }
   const total=list.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
-  const rowHtml=e=>`<tr><td>${dCH(e.date)}</td><td>${escapeHtml(e.who||"")}</td><td>${escapeHtml(e.categoryLabel)}</td><td>${escapeHtml(e.description)}</td><td>${escapeHtml(e.merchant)}</td><td class="pr-r">${escapeHtml(e.km??"")}</td><td class="pr-r">${chf(e.amountCHF)}</td></tr>`;
+  const rowHtml=e=>`<tr><td>${dCH(e.date)}</td><td>${escapeHtml(e.who||"")}</td><td>${escapeHtml(e.categoryLabel)}</td><td>${escapeHtml(e.description)}</td><td>${escapeHtml(e.merchant)}</td><td class="pr-r">${escapeHtml(e.km??"")}</td><td>${e.paidBy==="firma"?"Firma":e.paidBy==="privat"?"privat":""}</td><td class="pr-r">${chf(e.amountCHF)}</td></tr>`;
   let body="", catSummary="";
   if(isYear(filter)){
     const byMonth={};
@@ -835,9 +861,9 @@ async function buildReport(){
     Object.keys(byMonth).sort().forEach(mk=>{
       const items=byMonth[mk];
       const sub=items.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
-      body+=`<tr class="pr-group"><td colspan="7">${mLabel(mk)}</td></tr>`;
+      body+=`<tr class="pr-group"><td colspan="8">${mLabel(mk)}</td></tr>`;
       body+=items.map(rowHtml).join("");
-      body+=`<tr class="pr-sub"><td colspan="6">Zwischentotal ${mLabel(mk)}</td><td class="pr-r">CHF ${chf(sub)}</td></tr>`;
+      body+=`<tr class="pr-sub"><td colspan="7">Zwischentotal ${mLabel(mk)}</td><td class="pr-r">CHF ${chf(sub)}</td></tr>`;
     });
     const byCat={};
     list.forEach(e=>{byCat[e.categoryLabel]=(byCat[e.categoryLabel]||0)+(Number(e.amountCHF)||0);});
@@ -850,8 +876,13 @@ async function buildReport(){
   const belege=list.filter(e=>receipts[e.id]).map(e=>`<div class="pr-beleg"><div class="cap">${dCH(e.date)} · ${escapeHtml(e.description)} · CHF ${chf(e.amountCHF)}</div><img src="${escapeHtml(receipts[e.id])}"></div>`).join("");
   document.getElementById("printReport").innerHTML=`
     <div class="pr-h"><h2>Spesenabrechnung${isYear(filter)?" "+filter:""}${whoFilter?" · "+escapeHtml(whoFilter):""}</h2><div style="text-align:right;font-size:12px">PMG Immobilien AG<br>${filter?yLabel(filter):"Alle Perioden"}<br>erstellt ${dCH(todayISO())}</div></div>
-    <table class="pr-table"><thead><tr><th>Datum</th><th>Wer</th><th>Kategorie</th><th>Beschreibung</th><th>Händler</th><th class="pr-r">km</th><th class="pr-r">Betrag CHF</th></tr></thead>
-    <tbody>${body}<tr class="pr-total"><td colspan="6">Total ${filter?yLabel(filter):""}</td><td class="pr-r">CHF ${chf(total)}</td></tr></tbody></table>
+    <table class="pr-table"><thead><tr><th>Datum</th><th>Wer</th><th>Kategorie</th><th>Beschreibung</th><th>Händler</th><th class="pr-r">km</th><th>Bezahlt</th><th class="pr-r">Betrag CHF</th></tr></thead>
+    <tbody>${body}<tr class="pr-total"><td colspan="7">Total ${filter?yLabel(filter):""}</td><td class="pr-r">CHF ${chf(total)}</td></tr>
+    ${(()=>{const sp=paidSplit(list); if(sp.allPrivat) return "";
+      return `<tr><td colspan="7">davon Rückerstattung (privat bezahlt)</td><td class="pr-r">CHF ${chf(sp.privat)}</td></tr>
+        <tr><td colspan="7">davon Firmenkarte</td><td class="pr-r">CHF ${chf(sp.firma)}</td></tr>`
+        +(sp.offen?`<tr><td colspan="7">davon ohne Angabe</td><td class="pr-r">CHF ${chf(sp.offen)}</td></tr>`:"");})()}
+    </tbody></table>
     ${catSummary}
     ${belege?`<div class="pr-appendix"><h3>Belege</h3><div class="pr-belege">${belege}</div></div>`:""}`;
   window.print();
@@ -878,7 +909,7 @@ function validImport(raw){
   const cat=catById(raw.categoryId);
   return {...stripLocal(raw),categoryId:cat.id,categoryLabel:String(raw.categoryLabel||cat.label),
     description:String(raw.description??""),merchant:String(raw.merchant??""),who:raw.who?String(raw.who):"",
-    amount,amountCHF,km,rate,currency,hasReceipt:!!raw.hasReceipt,synced:false,pending:false};
+    amount,amountCHF,km,rate,currency,paidBy:validPaidBy(raw.paidBy),hasReceipt:!!raw.hasReceipt,synced:false,pending:false};
 }
 const validImage = d => typeof d==="string" && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(d);
 async function importBackup(file){
