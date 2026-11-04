@@ -351,9 +351,17 @@ function fileName_(it, hash) {
   return [it.date, part(it.who), part(it.merchant || it.description), hash.slice(0, 8)].filter(Boolean).join("_") + ".jpg";
 }
 
+/** Zufallscode aus sicheren Zufallsbytes (getUuid nutzt einen kryptografischen Generator, Math.random nicht). */
 function randomCode_(n) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const limit = 256 - (256 % chars.length); // ohne Modulo-Verzerrung
   let s = "";
-  for (let i = 0; i < n; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  while (s.length < n) {
+    const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, Utilities.getUuid() + Utilities.getUuid());
+    for (let i = 0; i < bytes.length && s.length < n; i++) {
+      const b = (bytes[i] + 256) % 256;
+      if (b < limit) s += chars[b % chars.length];
+    }
+  }
   return s;
 }

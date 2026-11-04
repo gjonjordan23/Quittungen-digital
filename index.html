@@ -596,7 +596,7 @@ function openEntry(existing, initialFile){
   function renderRate(){
     const rb=get("[data-rateblock]");
     const cur=(val("currency")||d.currency||"CHF").toUpperCase();
-    if(cur && cur!=="CHF"){
+    if(cur && cur!=="CHF" && catById(val("categoryId")).type!=="km"){
       rb.innerHTML=`<div class="field"><label>Kurs ${cur} → CHF</label><input class="input mono" data-f="rate" inputmode="decimal" value="${escapeHtml(d.rate)}" placeholder="z.B. 0.95"><div class="hintline" data-rateout></div></div>`;
       const upd=()=>{const {amountCHF}=compute({...readAll(),currency:cur});rb.querySelector("[data-rateout]").textContent=Number.isFinite(amountCHF)?("= CHF "+chf(amountCHF)):"";};
       rb.querySelector('[data-f="rate"]').addEventListener("input",e=>{d.rate=e.target.value;upd();});
@@ -697,7 +697,7 @@ function compute(d){
   if(cat.type==="km") amount=(parseNum(d.km)||0)*settings.kmRate;
   else if(cat.type==="lunch") amount=(d.amount===""||d.amount==null)?settings.lunchRate:parseNum(d.amount);
   else amount=parseNum(d.amount);
-  const cur=(d.currency||"CHF").toUpperCase();
+  const cur=cat.type==="km" ? "CHF" : (d.currency||"CHF").toUpperCase(); // km-Ansatz ist immer CHF
   const rate=parseNum(d.rate);
   const amountCHF = cur==="CHF" ? amount : (Number.isFinite(rate)?amount*rate:NaN);
   return {amount,amountCHF,cur,rate,cat};
@@ -827,7 +827,7 @@ async function buildReport(){
     for(const e of missing) await ensureImage(e);
   }
   const total=list.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
-  const rowHtml=e=>`<tr><td>${dCH(e.date)}</td><td>${escapeHtml(e.who||"")}</td><td>${escapeHtml(e.categoryLabel)}</td><td>${escapeHtml(e.description)}</td><td>${escapeHtml(e.merchant)}</td><td class="pr-r">${e.km??""}</td><td class="pr-r">${chf(e.amountCHF)}</td></tr>`;
+  const rowHtml=e=>`<tr><td>${dCH(e.date)}</td><td>${escapeHtml(e.who||"")}</td><td>${escapeHtml(e.categoryLabel)}</td><td>${escapeHtml(e.description)}</td><td>${escapeHtml(e.merchant)}</td><td class="pr-r">${escapeHtml(e.km??"")}</td><td class="pr-r">${chf(e.amountCHF)}</td></tr>`;
   let body="", catSummary="";
   if(isYear(filter)){
     const byMonth={};
@@ -847,7 +847,7 @@ async function buildReport(){
   } else {
     body=list.map(rowHtml).join("");
   }
-  const belege=list.filter(e=>receipts[e.id]).map(e=>`<div class="pr-beleg"><div class="cap">${dCH(e.date)} · ${escapeHtml(e.description)} · CHF ${chf(e.amountCHF)}</div><img src="${receipts[e.id]}"></div>`).join("");
+  const belege=list.filter(e=>receipts[e.id]).map(e=>`<div class="pr-beleg"><div class="cap">${dCH(e.date)} · ${escapeHtml(e.description)} · CHF ${chf(e.amountCHF)}</div><img src="${escapeHtml(receipts[e.id])}"></div>`).join("");
   document.getElementById("printReport").innerHTML=`
     <div class="pr-h"><h2>Spesenabrechnung${isYear(filter)?" "+filter:""}${whoFilter?" · "+escapeHtml(whoFilter):""}</h2><div style="text-align:right;font-size:12px">PMG Immobilien AG<br>${filter?yLabel(filter):"Alle Perioden"}<br>erstellt ${dCH(todayISO())}</div></div>
     <table class="pr-table"><thead><tr><th>Datum</th><th>Wer</th><th>Kategorie</th><th>Beschreibung</th><th>Händler</th><th class="pr-r">km</th><th class="pr-r">Betrag CHF</th></tr></thead>
@@ -864,20 +864,40 @@ function exportBackup(){
   shareOrDownload(new Blob([JSON.stringify(dump)],{type:"application/json"}),`spesen-${todayISO()}.json`)
     .then(ok=>{ if(ok) toast(connected()?"Spesen-Datei bereit.":"Spesen-Datei bereit — am Laptop über Zahnrad → Importieren einlesen."); });
 }
+// Eingelesene Dateien sind fremde Daten: nur plausible Einträge und echte Bilder übernehmen.
+const finiteOrNull = v => (v===""||v==null) ? null : (Number.isFinite(Number(v)) ? Number(v) : NaN);
+function validImport(raw){
+  if(!raw || typeof raw!=="object") return null;
+  if(!/^[\w.-]{1,40}$/.test(String(raw.id||""))) return null;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(raw.date||""))) return null;
+  const amount=Number(raw.amount), amountCHF=Number(raw.amountCHF);
+  const km=finiteOrNull(raw.km), rate=finiteOrNull(raw.rate);
+  if(!Number.isFinite(amount)||!Number.isFinite(amountCHF)||Number.isNaN(km)||Number.isNaN(rate)) return null;
+  const currency=String(raw.currency||"CHF").toUpperCase();
+  if(!/^[A-Z]{3}$/.test(currency)) return null;
+  const cat=catById(raw.categoryId);
+  return {...stripLocal(raw),categoryId:cat.id,categoryLabel:String(raw.categoryLabel||cat.label),
+    description:String(raw.description??""),merchant:String(raw.merchant??""),who:raw.who?String(raw.who):"",
+    amount,amountCHF,km,rate,currency,hasReceipt:!!raw.hasReceipt,synced:false,pending:false};
+}
+const validImage = d => typeof d==="string" && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(d);
 async function importBackup(file){
   let data; try{data=JSON.parse(await file.text());}catch{return toast("Datei nicht lesbar.");}
-  if(!Array.isArray(data.expenses)) return toast("Keine gültige Spesen-Datei.");
-  let added=0, updated=0;
+  if(!data || !Array.isArray(data.expenses)) return toast("Keine gültige Spesen-Datei.");
+  let added=0, updated=0, skipped=0;
   for(const raw of data.expenses){
-    const e={...stripLocal(raw),synced:false,pending:false};
+    const e=validImport(raw);
+    if(!e){ skipped++; continue; }
     const existing=expenses.find(x=>x.id===e.id);
     if(existing && existing.synced) { updated++; continue; } // schon in der Ablage
     if(existing) updated++; else added++;
     await idbPut("expenses",e);
   }
-  for(const r of (data.receipts||[])) await idbPut("receipts",r);
+  for(const r of (Array.isArray(data.receipts)?data.receipts:[])){
+    if(r && /^[\w.-]{1,40}$/.test(String(r.id||"")) && validImage(r.data)) await idbPut("receipts",{id:String(r.id),data:r.data});
+  }
   await loadLocal(); render();
-  toast(`Importiert: ${added} neu${updated?`, ${updated} schon vorhanden`:""}.`);
+  toast(`Importiert: ${added} neu${updated?`, ${updated} schon vorhanden`:""}${skipped?`, ${skipped} unlesbar übersprungen`:""}.`);
   if(connected() && localOnly().length){
     if(!settings.who) return openSettings();
     await uploadLocal();
