@@ -110,6 +110,13 @@ body{background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-fo
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 18px;
   border-radius:10px;font-size:13.5px;z-index:60;box-shadow:0 6px 24px rgba(0,0,0,.18);max-width:88vw;text-align:center}
 
+.chip.person{font-family:var(--sans)}
+.people{display:flex;gap:6px;flex-wrap:wrap;margin:22px 2px -14px}
+.pill.who{color:var(--money);border-color:var(--money-soft);background:var(--money-soft)}
+.pill.wait{color:var(--accent);border-color:var(--accent-soft);background:#fff}
+.previewimg{cursor:zoom-in}
+.previewimg.big{max-height:75vh;cursor:zoom-out}
+.okline{font-size:13.5px;font-weight:600;color:var(--money);margin-top:10px}
 .print-report{display:none}
 @media print{
   body{padding:0}.inner,.toast,.scrim{display:none!important}
@@ -135,9 +142,9 @@ body{background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-fo
 <body>
 <div class="inner">
   <div class="top">
-    <div class="brand"><h1>Spesen</h1><span class="tag">Kassenbuch</span></div>
+    <div class="brand"><h1>Spesen</h1><span class="tag" id="syncTag">Kassenbuch</span></div>
     <div style="display:flex;gap:8px">
-    <button class="iconbtn" id="btnTransfer" title="An Laptop übertragen">
+    <button class="iconbtn" id="btnTransfer" title="Als Datei exportieren">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v14"/></svg>
     </button>
     <button class="iconbtn" id="btnSettings" title="Einstellungen">
@@ -152,10 +159,11 @@ body{background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-fo
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
         Beleg fotografieren
       </button>
-      <div class="scan-hint">Foto rein — <b>Händler, Datum, Betrag &amp; Kategorie</b> werden automatisch erkannt. Danach kurz prüfen und speichern.</div>
+      <div class="scan-hint" id="scanHint">Foto rein, dann <b>Betrag, Datum &amp; Kategorie</b> selbst eintragen und speichern.</div>
     </div>
   </div>
 
+  <div class="people" id="people"></div>
   <div class="sumbar">
     <div class="months" id="months"></div>
     <div class="total"><div class="lbl" id="totalLbl">Total</div><div class="val" id="totalVal"><small>CHF</small>0.00</div></div>
@@ -189,14 +197,14 @@ const CATEGORIES = [
   {id:"sonstiges",label:"Sonstiges",type:"normal"},
 ];
 const catById = id => CATEGORIES.find(c=>c.id===id) || CATEGORIES[CATEGORIES.length-1];
-
-const DEFAULT_SETTINGS = {kmRate:0.7, lunchRate:25, apiKey:"", model:"claude-haiku-4-5-20251001"};
-
+const DEFAULT_SETTINGS = {kmRate:0.7, lunchRate:25, who:"", apiUrl:"", pin:"", scan:false};
 let settings = loadSettings();
-let expenses = [];      // records
-let receipts = {};      // id -> dataURL
-let filter = "";        // "YYYY-MM" (month) or "YYYY" (whole year) or ""
-let openImage = null;   // pending image in modal
+let expenses = [];     // records (cache)
+let receipts = {};     // id -> dataURL (local image cache)
+let filter = "";       // "YYYY-MM" (month) or "YYYY" (whole year) or ""
+let whoFilter = "";    // "" = alle
+let outboxCount = 0;
+const connected = ()=> !!(settings.apiUrl && settings.pin);
 const isYear = f => /^\d{4}$/.test(f||"");
 const inFilter = (date,f)=> isYear(f) ? (date||"").slice(0,4)===f : mKey(date)===f;
 const yLabel = f => isYear(f) ? ("Jahr "+f) : mLabel(f);
@@ -205,11 +213,12 @@ const yLabel = f => isYear(f) ? ("Jahr "+f) : mLabel(f);
 let _db;
 function db(){
   return _db ? Promise.resolve(_db) : new Promise((res,rej)=>{
-    const r = indexedDB.open("spesenDB",1);
+    const r = indexedDB.open("spesenDB",2);
     r.onupgradeneeded = e=>{
       const d = e.target.result;
       if(!d.objectStoreNames.contains("expenses")) d.createObjectStore("expenses",{keyPath:"id"});
       if(!d.objectStoreNames.contains("receipts")) d.createObjectStore("receipts",{keyPath:"id"});
+      if(!d.objectStoreNames.contains("outbox")) d.createObjectStore("outbox",{keyPath:"key"});
     };
     r.onsuccess = ()=>{_db=r.result;res(_db)};
     r.onerror = ()=>rej(r.error);
@@ -219,6 +228,10 @@ async function idbAll(store){
   const d=await db();
   return new Promise((res,rej)=>{const t=d.transaction(store).objectStore(store).getAll();t.onsuccess=()=>res(t.result);t.onerror=()=>rej(t.error);});
 }
+async function idbGet(store,key){
+  const d=await db();
+  return new Promise((res,rej)=>{const t=d.transaction(store).objectStore(store).get(key);t.onsuccess=()=>res(t.result);t.onerror=()=>rej(t.error);});
+}
 async function idbPut(store,val){
   const d=await db();
   return new Promise((res,rej)=>{const t=d.transaction(store,"readwrite");t.objectStore(store).put(val);t.oncomplete=res;t.onerror=()=>rej(t.error);});
@@ -227,17 +240,24 @@ async function idbDel(store,id){
   const d=await db();
   return new Promise((res,rej)=>{const t=d.transaction(store,"readwrite");t.objectStore(store).delete(id);t.oncomplete=res;t.onerror=()=>rej(t.error);});
 }
-async function idbClear(store){
+async function idbReplaceAll(store,items){
   const d=await db();
-  return new Promise((res,rej)=>{const t=d.transaction(store,"readwrite");t.objectStore(store).clear();t.oncomplete=res;t.onerror=()=>rej(t.error);});
+  return new Promise((res,rej)=>{
+    const t=d.transaction(store,"readwrite"); const s=t.objectStore(store);
+    s.clear(); items.forEach(i=>s.put(i));
+    t.oncomplete=res; t.onerror=()=>rej(t.error);
+  });
 }
 
 /* ============================================================ settings */
 function loadSettings(){
-  try{return {...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem("spesen:settings")||"{}")};}
-  catch{return {...DEFAULT_SETTINGS};}
+  let s;
+  try{ s={...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem("spesen:settings")||"{}")}; }
+  catch{ s={...DEFAULT_SETTINGS}; }
+  delete s.apiKey; delete s.model; // alte Einstellungen: Schlüssel liegt jetzt nur noch in der Firmenablage
+  return s;
 }
-function saveSettings(){ localStorage.setItem("spesen:settings", JSON.stringify(settings)); }
+function saveSettings(){ try{ localStorage.setItem("spesen:settings", JSON.stringify(settings)); }catch{} }
 
 /* ============================================================ helpers */
 const chf = n => new Intl.NumberFormat("de-CH",{minimumFractionDigits:2,maximumFractionDigits:2}).format(Number.isFinite(n)?n:0);
@@ -247,9 +267,10 @@ const dCH = iso => { if(!iso) return "—"; const [y,m,d]=iso.split("-"); return
 const mKey = iso => (iso||"").slice(0,7);
 const mLabel = mk => { if(!mk) return "Alle"; const [y,m]=mk.split("-"); return `${MON[+m-1]} ${y}`; };
 const parseNum = v => { if(v===""||v==null) return NaN; return parseFloat(String(v).replace(",",".").replace(/[^\d.\-]/g,"")); };
-const todayISO = ()=> new Date().toISOString().slice(0,10);
+const todayISO = ()=> { const d=new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10); };
 const uid = ()=> Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const el = (html)=>{const t=document.createElement("template");t.innerHTML=html.trim();return t.content.firstChild;};
+function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 
 let toastT;
 function toast(msg){
@@ -257,9 +278,8 @@ function toast(msg){
   let t=document.querySelector(".toast");
   if(!t){t=el('<div class="toast"></div>');document.body.appendChild(t);}
   t.textContent=msg;
-  toastT=setTimeout(()=>t.remove(),2800);
+  toastT=setTimeout(()=>t.remove(),3200);
 }
-
 function downloadBlob(blob,name){
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();
@@ -276,7 +296,6 @@ async function shareOrDownload(blob,name){
   downloadBlob(blob,name);
   return true;
 }
-
 async function compressImage(file,maxDim=1100,quality=0.7){
   const dataUrl=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file);});
   const img=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=dataUrl;});
@@ -286,62 +305,169 @@ async function compressImage(file,maxDim=1100,quality=0.7){
   const out=c.toDataURL("image/jpeg",quality);
   return {dataUrl:out, base64:out.split(",")[1], mediaType:"image/jpeg"};
 }
+function b64urlEncode(str){ return btoa(unescape(encodeURIComponent(str))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
+function b64urlDecode(s){ s=s.replace(/-/g,"+").replace(/_/g,"/"); while(s.length%4) s+="="; return decodeURIComponent(escape(atob(s))); }
 
-/* ============================================================ receipt scan */
-async function scanReceipt(base64,mediaType){
-  if(!settings.apiKey) throw new Error("nokey");
-  const labels = CATEGORIES.map(c=>`"${c.label}"`).join(", ");
-  const prompt =
-    'Du bist ein Beleg-Parser für Schweizer Spesenabrechnungen. Lies den Beleg im Bild und gib AUSSCHLIESSLICH gültiges JSON zurück – keine Erklärung, kein Markdown. '+
-    'Schema: {"merchant":string|null,"date":"YYYY-MM-DD"|null,"amount":number|null,"currency":string,"category":string|null}. '+
-    '"amount" ist der Totalbetrag inkl. MwSt. "currency" als ISO-Code (z.B. "CHF","EUR"). '+
-    '"category" muss exakt einer von diesen sein: ['+labels+'] – wähle die plausibelste (Tankstelle/Benzin => "Fahrzeug / Treibstoff"). '+
-    'Wenn etwas nicht lesbar ist, setze null.';
-  const res = await fetch("https://api.anthropic.com/v1/messages",{
+/* ============================================================ Firmenablage (Server) */
+async function api(action,payload={}){
+  const res=await fetch(settings.apiUrl,{
     method:"POST",
-    headers:{
-      "content-type":"application/json",
-      "x-api-key":settings.apiKey,
-      "anthropic-version":"2023-06-01",
-      "anthropic-dangerous-direct-browser-access":"true"
-    },
-    body:JSON.stringify({
-      model:settings.model||DEFAULT_SETTINGS.model,
-      max_tokens:400,
-      messages:[{role:"user",content:[
-        {type:"image",source:{type:"base64",media_type:mediaType,data:base64}},
-        {type:"text",text:prompt}
-      ]}]
-    })
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body:JSON.stringify({...payload,action,pin:settings.pin})
   });
-  const data = await res.json();
-  if(!res.ok){ throw new Error(data?.error?.message || ("HTTP "+res.status)); }
-  const text=(data.content||[]).filter(c=>c.type==="text").map(c=>c.text).join("\n");
-  return JSON.parse(text.replace(/```json/g,"").replace(/```/g,"").trim());
+  let data; try{ data=await res.json(); }catch{ const e=new Error("Antwort der Ablage nicht lesbar"); e.server=true; throw e; }
+  if(!data.ok){ const e=new Error(data.error||"Fehler"); e.server=true; throw e; }
+  return data;
 }
 
-/* ============================================================ compute */
-function compute(d){
-  const cat=catById(d.categoryId);
-  let amount;
-  if(cat.type==="km") amount=(parseNum(d.km)||0)*settings.kmRate;
-  else if(cat.type==="lunch") amount=(d.amount===""||d.amount==null)?settings.lunchRate:parseNum(d.amount);
-  else amount=parseNum(d.amount);
-  const cur=(d.currency||"CHF").toUpperCase();
-  const rate=parseNum(d.rate);
-  const amountCHF = cur==="CHF" ? amount : (Number.isFinite(rate)?amount*rate:NaN);
-  return {amount,amountCHF,cur,rate,cat};
+function inviteLink(){
+  return location.origin+location.pathname+"#verbinden="+b64urlEncode(JSON.stringify({u:settings.apiUrl,p:settings.pin}));
+}
+function readInvite(){
+  const m=(location.hash||"").match(/verbinden=([A-Za-z0-9_-]+)/);
+  if(!m) return null;
+  try{ const j=JSON.parse(b64urlDecode(m[1])); if(j && j.u && j.p) return j; }catch{}
+  return null;
+}
+
+async function enqueueSave(item,image,editor){
+  const key="save:"+item.id;
+  const prev=await idbGet("outbox",key);
+  await idbPut("outbox",{key,kind:"save",ts:prev?prev.ts:Date.now(),item:stripLocal(item),
+    image:image||(prev&&prev.image)||null,editor:editor||settings.who});
+}
+async function enqueueDelete(item){
+  const prev=await idbGet("outbox","save:"+item.id);
+  if(prev) await idbDel("outbox","save:"+item.id);
+  if(item.synced) await idbPut("outbox",{key:"del:"+item.id,kind:"delete",ts:Date.now(),id:item.id,editor:settings.who});
+}
+function stripLocal(e){ const {synced,pending,...rest}=e; return rest; }
+
+let syncing=false;
+async function flushOutbox(){
+  if(!connected()||syncing) return;
+  syncing=true;
+  try{
+    const ops=(await idbAll("outbox")).sort((a,b)=>a.ts-b.ts);
+    for(const op of ops){
+      try{
+        if(op.kind==="save"){
+          const r=await api("save",{item:op.item,image:op.image,wer:op.editor});
+          const i=expenses.findIndex(e=>e.id===r.item.id);
+          const rec={...r.item,synced:true,pending:false};
+          if(i>=0) expenses[i]=rec; else expenses.push(rec);
+          await idbPut("expenses",rec);
+        } else if(op.kind==="delete"){
+          await api("delete",{id:op.id,wer:op.editor});
+        }
+        await idbDel("outbox",op.key);
+      }catch(e){
+        if(e.server && e.message==="pin") toast("Zugangscode ungültig – bitte Verbindung in den Einstellungen prüfen.");
+        else if(e.server) toast("Ablage meldet Fehler: "+e.message);
+        break; // ohne Netz: später nochmals versuchen
+      }
+    }
+  } finally { syncing=false; }
+  await updateOutboxCount();
+  render();
+}
+async function updateOutboxCount(){ try{ outboxCount=(await idbAll("outbox")).length; }catch{ outboxCount=0; } }
+
+async function refreshFromServer(){
+  if(!connected()) return;
+  try{
+    const r=await api("list");
+    settings.scan=!!r.scan; saveSettings();
+    const outbox=await idbAll("outbox");
+    const delIds=new Set(outbox.filter(o=>o.kind==="delete").map(o=>o.id));
+    const pendingLocal=new Map(expenses.filter(e=>e.pending).map(e=>[e.id,e]));
+    const server=r.items.filter(i=>!delIds.has(i.id)).map(i=>pendingLocal.get(i.id)||{...i,synced:true,pending:false});
+    const ids=new Set(server.map(i=>i.id));
+    const keep=expenses.filter(e=>!ids.has(e.id) && !delIds.has(e.id) && (e.pending || !e.synced));
+    expenses=[...server,...keep];
+    await idbReplaceAll("expenses",expenses);
+    render();
+  }catch(e){
+    if(e.server && e.message==="pin") toast("Zugangscode ungültig – bitte Verbindung in den Einstellungen prüfen.");
+    // ohne Netz: zwischengespeicherte Daten bleiben sichtbar
+  }
+}
+
+const localOnly = ()=> expenses.filter(e=>!e.synced && !e.pending);
+async function uploadLocal(){
+  const list=localOnly();
+  for(const e of list){
+    e.who=e.who||settings.who;
+    e.pending=true;
+    await idbPut("expenses",e);
+    await enqueueSave(e,receipts[e.id]||null,settings.who);
+  }
+  await updateOutboxCount(); render();
+  if(list.length) toast(`${list.length} Beleg${list.length>1?"e":""} werden hochgeladen …`);
+  await flushOutbox();
+}
+
+async function connectWith(url,pin){
+  const prev={apiUrl:settings.apiUrl,pin:settings.pin};
+  settings.apiUrl=url.trim(); settings.pin=pin.trim();
+  try{
+    const r=await api("ping");
+    settings.scan=!!r.scan; saveSettings();
+    return true;
+  }catch(e){
+    settings.apiUrl=prev.apiUrl; settings.pin=prev.pin; saveSettings();
+    toast(e.server&&e.message==="pin" ? "Zugangscode stimmt nicht." : "Ablage nicht erreichbar – Adresse prüfen.");
+    return false;
+  }
+}
+
+async function ensureImage(e){
+  if(receipts[e.id]) return receipts[e.id];
+  if(!e.hasReceipt || !connected() || !e.synced) return null;
+  try{
+    const r=await api("image",{id:e.id});
+    receipts[e.id]=r.data;
+    await idbPut("receipts",{id:e.id,data:r.data});
+    return r.data;
+  }catch{ return null; }
 }
 
 /* ============================================================ render */
+function updateHeader(){
+  const tag=document.getElementById("syncTag");
+  if(!tag) return;
+  if(!connected()) tag.textContent="Nur dieses Gerät";
+  else if(outboxCount) tag.textContent=`${outboxCount} ausstehend`;
+  else tag.textContent="Firmenablage";
+  const hint=document.getElementById("scanHint");
+  if(hint) hint.innerHTML = (connected() && settings.scan)
+    ? 'Foto rein — <b>Händler, Datum, Betrag &amp; Kategorie</b> werden automatisch erkannt. Danach kurz prüfen und speichern.'
+    : 'Foto rein, dann <b>Betrag, Datum &amp; Kategorie</b> selbst eintragen und speichern.';
+}
+
 function render(){
-  const months=[...new Set(expenses.map(e=>mKey(e.date)))].sort().reverse();
-  const years=[...new Set(expenses.map(e=>(e.date||"").slice(0,4)).filter(Boolean))].sort().reverse();
+  updateHeader();
+  const people=[...new Set(expenses.map(e=>e.who).filter(Boolean))].sort();
+  if(whoFilter && !people.includes(whoFilter)) whoFilter="";
+  const pool=expenses.filter(e=>!whoFilter || e.who===whoFilter);
+
+  const months=[...new Set(pool.map(e=>mKey(e.date)))].sort().reverse();
+  const years=[...new Set(pool.map(e=>(e.date||"").slice(0,4)).filter(Boolean))].sort().reverse();
   const allKeys=[...years,...months];
   if(filter && !allKeys.includes(filter)) filter = months[0]||"";
   if(!filter && months.length) filter = months.includes(mKey(todayISO()))?mKey(todayISO()):months[0];
 
-  // chips: years first (highlighted style), then months
+  const pWrap=document.getElementById("people");
+  pWrap.innerHTML="";
+  if(people.length>1){
+    [["","Alle"],...people.map(p=>[p,p])].forEach(([v,l])=>{
+      const c=el(`<button class="chip person${v===whoFilter?' on':''}"></button>`);
+      c.textContent=l;
+      c.onclick=()=>{whoFilter=v;render();};
+      pWrap.appendChild(c);
+    });
+  }
+
   const mWrap=document.getElementById("months");
   mWrap.innerHTML="";
   if(months.length===0){ mWrap.appendChild(el(`<span class="chip on">${mLabel(filter||mKey(todayISO()))}</span>`)); }
@@ -356,47 +482,51 @@ function render(){
     mWrap.appendChild(c);
   });
 
-  const list=expenses.filter(e=>filter?inFilter(e.date,filter):true).sort((a,b)=>a.date<b.date?1:-1);
+  const list=currentList().reverse();
   const total=list.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
-
-  document.getElementById("totalLbl").textContent="Total "+(filter?yLabel(filter):"");
+  document.getElementById("totalLbl").textContent="Total "+(filter?yLabel(filter):"")+(whoFilter?" · "+whoFilter:"");
   document.getElementById("totalVal").innerHTML=`<small>CHF</small>${chf(total)}`;
 
   const led=document.getElementById("ledger");
   led.innerHTML="";
   if(list.length===0){
     led.appendChild(el(`<div class="empty">Noch keine Spesen erfasst.<br>Foto knipsen oder „Manuell" tippen.</div>`));
-  } else {
-    list.forEach(e=>{
-      const [y,m,d]=e.date.split("-");
-      const row=el(`<div class="row">
-        <div class="rdate">${MON3[+m-1]}<b>${d}</b></div>
-        <div class="rmid">
-          <div class="rtitle"></div>
-          <div class="rmeta">
-            <span class="pill"></span>
-            ${e.km?`<span class="pill km">${e.km} km</span>`:""}
-            ${e.merchant?`<span class="mch"></span>`:""}
-          </div>
-        </div>
-        <div class="ramt">CHF ${chf(e.amountCHF)}${e.currency!=="CHF"?`<small>${e.currency} ${chf(e.amount)}</small>`:""}</div>
-      </div>`);
-      row.querySelector(".rtitle").textContent=e.description;
-      row.querySelector(".pill").textContent=e.categoryLabel;
-      if(e.merchant) row.querySelector(".mch").textContent=e.merchant;
-      if(e.hasReceipt && receipts[e.id]){
-        const img=el(`<img class="thumb" alt="">`); img.src=receipts[e.id];
-        row.querySelector(".rmeta").appendChild(img);
-      }
-      row.onclick=()=>openEntry(e);
-      led.appendChild(row);
-    });
+    return;
   }
+  list.forEach(e=>{
+    const [,m,d]=e.date.split("-");
+    const row=el(`<div class="row">
+      <div class="rdate">${MON3[+m-1]}<b>${d}</b></div>
+      <div class="rmid">
+        <div class="rtitle"></div>
+        <div class="rmeta">
+          <span class="pill" data-cat></span>
+          ${e.km?`<span class="pill km">${escapeHtml(e.km)} km</span>`:""}
+          ${e.who?`<span class="pill who" data-who></span>`:""}
+          ${e.pending?`<span class="pill wait">wird gesendet</span>`:""}
+          ${connected()&&!e.synced&&!e.pending?`<span class="pill wait">nur lokal</span>`:""}
+          ${e.merchant?`<span class="mch"></span>`:""}
+        </div>
+      </div>
+      <div class="ramt">CHF ${chf(e.amountCHF)}${e.currency!=="CHF"?`<small>${escapeHtml(e.currency)} ${chf(e.amount)}</small>`:""}</div>
+    </div>`);
+    row.querySelector(".rtitle").textContent=e.description;
+    row.querySelector("[data-cat]").textContent=e.categoryLabel;
+    if(e.who) row.querySelector("[data-who]").textContent=e.who;
+    if(e.merchant) row.querySelector(".mch").textContent=e.merchant;
+    if(e.hasReceipt){
+      if(receipts[e.id]){ const img=el(`<img class="thumb" alt="">`); img.src=receipts[e.id]; row.querySelector(".rmeta").appendChild(img); }
+      else row.querySelector(".rmeta").appendChild(el(`<span class="pill">Beleg</span>`));
+    }
+    row.onclick=()=>openEntry(e);
+    led.appendChild(row);
+  });
 }
 
 /* ============================================================ entry modal */
-function openEntry(existing){
-  openImage = existing ? (receipts[existing.id]||null) : null;
+function openEntry(existing, initialFile){
+  let openImage = existing ? (receipts[existing.id]||null) : null;
+  let imageChanged = false;
   const d = existing ? {
     id:existing.id,date:existing.date,categoryId:existing.categoryId,description:existing.description||"",
     merchant:existing.merchant||"",currency:existing.currency||"CHF",
@@ -408,10 +538,10 @@ function openEntry(existing){
   const opts=CATEGORIES.map(c=>`<option value="${c.id}"${c.id===d.categoryId?" selected":""}>${c.label}</option>`).join("");
   scrim.appendChild(el(`
   <div class="sheet"><div class="sheet-head"><h3>${d.id?"Spese bearbeiten":"Neue Spese"}</h3>
-    <button class="iconbtn" data-x><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+  <button class="iconbtn" data-x><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
   <div class="sheet-body">
     <div data-scanning style="display:none" class="scanning"><svg class="spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg> Beleg wird gelesen …</div>
-    <img data-preview class="previewimg" style="display:${openImage?'block':'none'}" src="${openImage||''}">
+    <img data-preview class="previewimg" title="Antippen zum Vergrössern" style="display:${openImage?'block':'none'}" src="${openImage||''}">
     <div class="field"><label>Kategorie</label><select class="select" data-f="categoryId">${opts}</select></div>
     <div class="field"><label>Beschreibung</label><input class="input" data-f="description" placeholder="z.B. Mittagessen mit Kunde" value="${escapeHtml(d.description)}"></div>
     <div class="two">
@@ -422,16 +552,25 @@ function openEntry(existing){
     <div data-rateblock></div>
     <div class="field"><label>Beleg</label>
       <input type="file" accept="image/*" data-file style="display:none">
-      <button class="act" style="width:100%" data-addfoto><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg> <span data-fotolbl>${openImage?"Anderes Foto":"Foto hinzufügen & scannen"}</span></button>
+      <button class="act" style="width:100%" data-addfoto><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg> <span data-fotolbl>${openImage?"Anderes Foto":"Foto hinzufügen"}</span></button>
     </div>
     <button class="save" data-save>${d.id?"Änderungen speichern":"Spese speichern"}</button>
     ${d.id?'<button class="del" data-del>Spese löschen</button>':''}
+    <div class="hintline" data-whoinfo style="text-align:center;margin-top:6px"></div>
   </div></div>`));
   document.body.appendChild(scrim);
-
   const sheet=scrim.querySelector(".sheet");
   const get=sel=>sheet.querySelector(sel);
   const val=name=>{const n=get(`[data-f="${name}"]`);return n?n.value:"";};
+
+  if(existing && existing.who) get("[data-whoinfo]").textContent=`Erfasst von ${existing.who}`+(existing.pending?" · wird gesendet":"");
+  get("[data-preview]").onclick=e=>e.target.classList.toggle("big");
+
+  if(existing && existing.hasReceipt && !openImage){
+    ensureImage(existing).then(img=>{
+      if(img && !imageChanged){ openImage=img; const p=get("[data-preview]"); p.src=img; p.style.display="block"; get("[data-fotolbl]").textContent="Anderes Foto"; }
+    });
+  }
 
   function renderAmount(){
     const cat=catById(val("categoryId"));
@@ -471,7 +610,6 @@ function openEntry(existing){
       km:val("km")||d.km,rate:val("rate")||d.rate
     };
   }
-
   get('[data-f="categoryId"]').addEventListener("change",e=>{d.categoryId=e.target.value;renderAmount();});
   get('[data-f="description"]').addEventListener("input",e=>d.description=e.target.value);
   get('[data-f="date"]').addEventListener("input",e=>d.date=e.target.value);
@@ -484,27 +622,27 @@ function openEntry(existing){
 
   const fileInp=get("[data-file]");
   get("[data-addfoto]").onclick=()=>fileInp.click();
-  fileInp.onchange=async ev=>{const f=ev.target.files[0];ev.target.value="";if(f)await doScan(f);};
+  fileInp.onchange=async ev=>{const f=ev.target.files[0];ev.target.value="";if(f)await attachPhoto(f);};
 
-  async function doScan(file){
+  async function attachPhoto(file){
     const scEl=get("[data-scanning]"),prev=get("[data-preview]"),lbl=get("[data-fotolbl]");
     let comp; try{comp=await compressImage(file);}catch{toast("Bild konnte nicht geladen werden.");return;}
-    openImage=comp.dataUrl; prev.src=comp.dataUrl; prev.style.display="block"; lbl.textContent="Anderes Foto";
-    if(!settings.apiKey){ toast("Für den Scan zuerst API-Schlüssel in den Einstellungen hinterlegen."); return; }
+    openImage=comp.dataUrl; imageChanged=true;
+    prev.src=comp.dataUrl; prev.style.display="block"; lbl.textContent="Anderes Foto";
+    if(!(connected() && settings.scan)) return; // ohne KI: selbst ausfüllen
     scEl.style.display="flex";
     try{
-      const r=await scanReceipt(comp.base64,comp.mediaType);
+      const {result:r}=await api("scan",{image:comp.base64,categories:CATEGORIES.map(c=>c.label)});
       const matched=CATEGORIES.find(c=>c.label===r.category);
       if(r.merchant){d.merchant=r.merchant;get('[data-f="merchant"]').value=r.merchant; if(!d.description){d.description=r.merchant;get('[data-f="description"]').value=r.merchant;}}
       if(r.date){d.date=r.date;get('[data-f="date"]').value=r.date;}
-      if(r.currency){d.currency=r.currency.toUpperCase();}
+      if(r.currency){d.currency=String(r.currency).toUpperCase();}
       if(matched){d.categoryId=matched.id;get('[data-f="categoryId"]').value=matched.id;}
       if(r.amount!=null){d.amount=String(r.amount);}
       renderAmount();
       if(r.amount!=null){const ai=get('[data-f="amount"]');if(ai)ai.value=String(r.amount);}
     }catch(e){
-      if(e.message==="nokey") toast("Kein API-Schlüssel hinterlegt.");
-      else toast("Scan hat nicht geklappt – bitte manuell ergänzen.");
+      toast("Automatische Erkennung hat nicht geklappt – bitte selbst ergänzen.");
     }finally{ scEl.style.display="none"; }
   }
 
@@ -514,149 +652,236 @@ function openEntry(existing){
     if(!Number.isFinite(amount)||amount<=0) return toast("Bitte gültigen Betrag erfassen.");
     if(!dd.date) return toast("Bitte Datum wählen.");
     if(cur!=="CHF"&&!Number.isFinite(rate)) return toast(`Bitte Kurs ${cur}→CHF angeben.`);
+    if(connected() && !settings.who){ toast("Bitte zuerst in den Einstellungen eintragen, wem dieses Handy gehört."); return openSettings(); }
     const id=dd.id||uid();
     const rec={
       id,date:dd.date,categoryId:dd.categoryId,categoryLabel:cat.label,
       description:(dd.description||"").trim()||cat.label,merchant:(dd.merchant||"").trim(),
       currency:cur,amount:Number(amount.toFixed(2)),amountCHF:Number((amountCHF||0).toFixed(2)),
       km:cat.type==="km"?(parseNum(dd.km)||0):null,rate:cur==="CHF"?null:rate,
-      hasReceipt:!!openImage,createdAt:existing?existing.createdAt:Date.now()
+      who:existing?(existing.who||settings.who):settings.who,
+      hasReceipt:!!openImage||!!(existing&&existing.hasReceipt),
+      createdAt:existing?existing.createdAt:Date.now(),
+      synced:existing?!!existing.synced:false, pending:false
     };
+    if(openImage && imageChanged){ await idbPut("receipts",{id,data:openImage}); receipts[id]=openImage; }
+    if(connected()){
+      rec.pending=true;
+      await enqueueSave(rec, imageChanged?openImage:null, settings.who);
+    }
     await idbPut("expenses",rec);
-    if(openImage){ await idbPut("receipts",{id,data:openImage}); receipts[id]=openImage; }
     const i=expenses.findIndex(e=>e.id===id);
     if(i>=0) expenses[i]=rec; else expenses.push(rec);
     filter=mKey(rec.date);
-    close(); render(); toast(dd.id?"Gespeichert.":"Spese erfasst.");
+    close(); await updateOutboxCount(); render(); toast(dd.id?"Gespeichert.":"Spese erfasst.");
+    flushOutbox();
   };
 
   const del=get("[data-del]");
   if(del) del.onclick=async ()=>{
+    if(!confirm("Spese wirklich löschen?")) return;
+    const item=expenses.find(e=>e.id===d.id);
+    if(connected() && item) await enqueueDelete(item);
     await idbDel("expenses",d.id); await idbDel("receipts",d.id);
     delete receipts[d.id]; expenses=expenses.filter(e=>e.id!==d.id);
-    close(); render(); toast("Gelöscht.");
+    close(); await updateOutboxCount(); render(); toast("Gelöscht.");
+    flushOutbox();
   };
+
+  if(initialFile) attachPhoto(initialFile);
 }
-function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+
+function compute(d){
+  const cat=catById(d.categoryId);
+  let amount;
+  if(cat.type==="km") amount=(parseNum(d.km)||0)*settings.kmRate;
+  else if(cat.type==="lunch") amount=(d.amount===""||d.amount==null)?settings.lunchRate:parseNum(d.amount);
+  else amount=parseNum(d.amount);
+  const cur=(d.currency||"CHF").toUpperCase();
+  const rate=parseNum(d.rate);
+  const amountCHF = cur==="CHF" ? amount : (Number.isFinite(rate)?amount*rate:NaN);
+  return {amount,amountCHF,cur,rate,cat};
+}
 
 /* ============================================================ settings modal */
 function openSettings(){
+  const nLocal=connected()?localOnly().length:0;
+  const conn = connected() ? `
+    <div class="okline">✓ Verbunden mit der Firmenablage${settings.scan?" · automatische Erkennung an":""}</div>
+    <div class="hintline">Jede Spese wird automatisch in der gemeinsamen Ablage gespeichert. Ohne Netz wird sie später gesendet.</div>
+    <button class="act" style="width:100%;margin-top:10px" data-invite>Link für weiteres Handy teilen</button>
+    ${nLocal?`<button class="act primary" style="width:100%;margin-top:8px" data-upload>${nLocal} lokale Spese${nLocal>1?"n":""} hochladen</button>`:""}
+    <button class="del" data-disconnect>Verbindung trennen</button>`
+  : `
+    <div class="hintline">Noch nicht verbunden: Spesen bleiben nur auf diesem Gerät. Am einfachsten öffnest du den Einladungslink, den du von jemandem im Büro bekommst.</div>
+    <div class="field"><label>Adresse der Ablage (Web-App-URL)</label><input class="input mono" data-c="url" placeholder="https://script.google.com/macros/s/…/exec"></div>
+    <div class="field"><label>Zugangscode</label><input class="input mono" data-c="pin" type="password" autocomplete="off"></div>
+    <button class="act primary" style="width:100%;margin-top:12px" data-connect>Verbinden</button>`;
+
   const scrim=el(`<div class="scrim"></div>`);
   scrim.appendChild(el(`
   <div class="sheet"><div class="sheet-head"><h3>Einstellungen</h3>
-    <button class="iconbtn" data-x><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+  <button class="iconbtn" data-x><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
   <div class="sheet-body">
+    <div class="field"><label>Dieses Handy gehört</label><input class="input" data-s="who" placeholder="z.B. Manuel" value="${escapeHtml(settings.who)}"><div class="hintline">Wird bei jeder Spese als «Erfasst von» gespeichert.</div></div>
+    <hr class="divider">
     <div class="subhead">Pauschalen</div>
     <div class="two">
       <div class="field"><label>km-Ansatz (CHF/km)</label><input class="input mono" data-s="kmRate" inputmode="decimal" value="${settings.kmRate}"></div>
       <div class="field"><label>Mittagessen (CHF)</label><input class="input mono" data-s="lunchRate" inputmode="decimal" value="${settings.lunchRate}"></div>
     </div>
     <hr class="divider">
-    <div class="subhead">Belegscan</div>
-    <div class="field"><label>Anthropic API-Schlüssel</label><input class="input mono" data-s="apiKey" type="password" placeholder="sk-ant-…" value="${escapeHtml(settings.apiKey)}"><div class="hintline">Nötig fürs Foto→Daten. Wird nur lokal auf diesem Gerät gespeichert (nicht in der Datei, nicht in Sicherungen). Schlüssel erstellen auf console.anthropic.com.</div></div>
-    <div class="field"><label>Modell</label><input class="input mono" data-s="model" value="${escapeHtml(settings.model)}"><div class="hintline">Standard ist günstig. Bei schlechter Erkennung z.B. auf ein Sonnet-Modell wechseln.</div></div>
+    <div class="subhead">Firmenablage</div>
+    ${conn}
     <hr class="divider">
-    <div class="subhead">Daten &amp; Sicherung</div>
-    <div class="hintline" style="margin-bottom:8px">Deine Belege liegen lokal in diesem Browser. <b>Handy → Laptop:</b> am Handy oben aufs Übertragen-Symbol tippen (Teilen via AirDrop/iCloud), am Laptop hier „Importieren" — neue Belege werden dazugemischt, nichts wird überschrieben. Dieselbe Datei ist auch deine Sicherung.</div>
-    <button class="act" style="width:100%;margin-top:4px" data-backup><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Spesen-Datei exportieren (.json)</button>
-    <button class="act" style="width:100%;margin-top:8px" data-restore><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 8l5-5 5 5M12 3v12"/></svg> Spesen-Datei importieren</button>
+    <div class="subhead">Datei-Sicherung</div>
+    <div class="hintline" style="margin-bottom:8px">${connected()
+      ? "Die vollständige Ablage liegt in Google Drive. Hier kannst du alte Spesen-Dateien (.json) einlesen – sie werden in die Firmenablage hochgeladen."
+      : "Ohne Firmenablage liegen die Belege nur in diesem Browser. Mit „Exportieren“ sicherst du sie als Datei."}</div>
+    <button class="act" style="width:100%;margin-top:4px" data-backup>Spesen-Datei exportieren (.json)</button>
+    <button class="act" style="width:100%;margin-top:8px" data-restore>Spesen-Datei importieren</button>
     <button class="save" data-save>Einstellungen speichern</button>
   </div></div>`));
   document.body.appendChild(scrim);
   const g=s=>scrim.querySelector(s);
   const close=()=>scrim.remove();
+  const readBasics=()=>{
+    settings.who=g('[data-s="who"]').value.trim().slice(0,40);
+    settings.kmRate=parseNum(g('[data-s="kmRate"]').value)||0;
+    settings.lunchRate=parseNum(g('[data-s="lunchRate"]').value)||0;
+    saveSettings();
+  };
   g("[data-x]").onclick=close;
   scrim.addEventListener("click",e=>{if(e.target===scrim)close();});
   g("[data-backup]").onclick=exportBackup;
   g("[data-restore]").onclick=()=>document.getElementById("fileImport").click();
-  g("[data-save]").onclick=()=>{
-    settings.kmRate=parseNum(g('[data-s="kmRate"]').value)||0;
-    settings.lunchRate=parseNum(g('[data-s="lunchRate"]').value)||0;
-    settings.apiKey=g('[data-s="apiKey"]').value.trim();
-    settings.model=g('[data-s="model"]').value.trim()||DEFAULT_SETTINGS.model;
-    saveSettings(); close(); render(); toast("Gespeichert.");
+  g("[data-save]").onclick=()=>{ readBasics(); close(); render(); toast("Gespeichert."); };
+
+  if(g("[data-connect]")) g("[data-connect]").onclick=async ()=>{
+    readBasics();
+    const url=g('[data-c="url"]').value, pin=g('[data-c="pin"]').value;
+    if(!/^https:\/\/script\.google\.com\//.test(url.trim())) return toast("Bitte die Web-App-Adresse von Google einfügen.");
+    if(!pin.trim()) return toast("Bitte Zugangscode eingeben.");
+    if(await connectWith(url,pin)) { close(); await afterConnect(); }
   };
+  if(g("[data-invite]")) g("[data-invite]").onclick=async ()=>{
+    const link=inviteLink();
+    try{
+      if(navigator.share){ await navigator.share({title:"PMG Spesen",text:"Spesen-App: Link öffnen, dann „Zum Home-Bildschirm“ hinzufügen.",url:link}); return; }
+    }catch(e){ if(e && e.name==="AbortError") return; }
+    try{ await navigator.clipboard.writeText(link); toast("Link kopiert – per WhatsApp oder Mail schicken."); }
+    catch{ prompt("Diesen Link kopieren und schicken:",link); }
+  };
+  if(g("[data-upload]")) g("[data-upload]").onclick=async ()=>{
+    readBasics();
+    if(!settings.who) return toast("Bitte zuerst eintragen, wem dieses Handy gehört.");
+    close(); await uploadLocal();
+  };
+  if(g("[data-disconnect]")) g("[data-disconnect]").onclick=async ()=>{
+    if(!confirm("Verbindung zur Firmenablage trennen? Die Daten in der Ablage bleiben erhalten.")) return;
+    settings.apiUrl=""; settings.pin=""; settings.scan=false; saveSettings();
+    close(); render(); toast("Verbindung getrennt.");
+  };
+}
+
+async function afterConnect(){
+  toast("Mit der Firmenablage verbunden.");
+  await refreshFromServer();
+  const n=localOnly().length;
+  if(!settings.who){ openSettings(); toast("Bitte noch eintragen, wem dieses Handy gehört."); return; }
+  if(n && confirm(`Auf diesem Gerät liegen ${n} Spese${n>1?"n":""}, die noch nicht in der Firmenablage sind. Jetzt hochladen?`)) await uploadLocal();
 }
 
 /* ============================================================ exports */
 function currentList(){
-  return expenses.filter(e=>filter?inFilter(e.date,filter):true).sort((a,b)=>a.date<b.date?-1:1);
+  return expenses
+    .filter(e=>(!whoFilter || e.who===whoFilter) && (filter?inFilter(e.date,filter):true))
+    .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
 }
 function exportSpreadsheet(){
   const list=currentList();
   if(!list.length) return toast("Keine Spesen im gewählten Zeitraum.");
   const total=list.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
-  const header=["Datum","Kategorie","Beschreibung","Händler","km","Betrag","Währung","Kurs","Betrag CHF"];
-  const rows=list.map(e=>[dCH(e.date),e.categoryLabel,e.description,e.merchant,e.km??"",e.amount,e.currency,e.rate??"",e.amountCHF]);
-  rows.push(["","","","","","","","TOTAL CHF",Number(total.toFixed(2))]);
-  const fname=`Spesen_${filter||"alle"}`;
+  const header=["Datum","Erfasst von","Kategorie","Beschreibung","Händler","km","Betrag","Währung","Kurs","Betrag CHF"];
+  const rows=list.map(e=>[dCH(e.date),e.who||"",e.categoryLabel,e.description,e.merchant,e.km??"",e.amount,e.currency,e.rate??"",e.amountCHF]);
+  rows.push(["","","","","","","","","TOTAL CHF",Number(total.toFixed(2))]);
+  const fname=`Spesen_${filter||"alle"}${whoFilter?"_"+whoFilter:""}`;
   if(window.XLSX){
     const ws=XLSX.utils.aoa_to_sheet([header,...rows]);
-    ws["!cols"]=[{wch:11},{wch:22},{wch:26},{wch:20},{wch:6},{wch:10},{wch:8},{wch:9},{wch:12}];
+    ws["!cols"]=[{wch:11},{wch:12},{wch:22},{wch:26},{wch:20},{wch:6},{wch:10},{wch:8},{wch:9},{wch:12}];
     const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Spesen");
     const out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
     shareOrDownload(new Blob([out],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}),fname+".xlsx");
   } else {
     const csv=[header,...rows].map(r=>r.map(c=>{const s=String(c??"");return /[";\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(";")).join("\r\n");
-    shareOrDownload(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"}),fname+".csv");
+    shareOrDownload(new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8"}),fname+".csv");
   }
 }
-function buildReport(){
-  const list=currentList();
-  const total=list.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
-  const rowHtml=e=>`<tr><td>${dCH(e.date)}</td><td>${escapeHtml(e.categoryLabel)}</td><td>${escapeHtml(e.description)}</td><td>${escapeHtml(e.merchant)}</td><td class="pr-r">${e.km??""}</td><td class="pr-r">${chf(e.amountCHF)}</td></tr>`;
 
-  let body="";
+async function buildReport(){
+  const list=currentList();
+  if(!list.length) return toast("Keine Spesen im gewählten Zeitraum.");
+  const missing=list.filter(e=>e.hasReceipt && !receipts[e.id]);
+  if(missing.length && connected()){
+    toast(`${missing.length} Beleg${missing.length>1?"e werden":" wird"} geladen …`);
+    for(const e of missing) await ensureImage(e);
+  }
+  const total=list.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
+  const rowHtml=e=>`<tr><td>${dCH(e.date)}</td><td>${escapeHtml(e.who||"")}</td><td>${escapeHtml(e.categoryLabel)}</td><td>${escapeHtml(e.description)}</td><td>${escapeHtml(e.merchant)}</td><td class="pr-r">${e.km??""}</td><td class="pr-r">${chf(e.amountCHF)}</td></tr>`;
+  let body="", catSummary="";
   if(isYear(filter)){
-    // group by month, ascending, with a subtotal per month + category summary
     const byMonth={};
     list.forEach(e=>{(byMonth[mKey(e.date)]=byMonth[mKey(e.date)]||[]).push(e);});
     Object.keys(byMonth).sort().forEach(mk=>{
       const items=byMonth[mk];
       const sub=items.reduce((s,e)=>s+(Number(e.amountCHF)||0),0);
-      body+=`<tr class="pr-group"><td colspan="6">${mLabel(mk)}</td></tr>`;
+      body+=`<tr class="pr-group"><td colspan="7">${mLabel(mk)}</td></tr>`;
       body+=items.map(rowHtml).join("");
-      body+=`<tr class="pr-sub"><td colspan="5">Zwischentotal ${mLabel(mk)}</td><td class="pr-r">CHF ${chf(sub)}</td></tr>`;
+      body+=`<tr class="pr-sub"><td colspan="6">Zwischentotal ${mLabel(mk)}</td><td class="pr-r">CHF ${chf(sub)}</td></tr>`;
     });
-    // category summary for the year
     const byCat={};
     list.forEach(e=>{byCat[e.categoryLabel]=(byCat[e.categoryLabel]||0)+(Number(e.amountCHF)||0);});
-    var catSummary=`<div class="pr-appendix" style="page-break-before:auto"><h3>Zusammenfassung nach Kategorie</h3>
+    catSummary=`<div class="pr-appendix" style="page-break-before:auto"><h3>Zusammenfassung nach Kategorie</h3>
       <table class="pr-table"><tbody>${Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>${escapeHtml(k)}</td><td class="pr-r">CHF ${chf(v)}</td></tr>`).join("")}
       <tr class="pr-total"><td>Total ${filter}</td><td class="pr-r">CHF ${chf(total)}</td></tr></tbody></table></div>`;
   } else {
     body=list.map(rowHtml).join("");
-    var catSummary="";
   }
-
-  const belege=list.filter(e=>e.hasReceipt&&receipts[e.id]).map(e=>`<div class="pr-beleg"><div class="cap">${dCH(e.date)} · ${escapeHtml(e.description)} · CHF ${chf(e.amountCHF)}</div><img src="${receipts[e.id]}"></div>`).join("");
+  const belege=list.filter(e=>receipts[e.id]).map(e=>`<div class="pr-beleg"><div class="cap">${dCH(e.date)} · ${escapeHtml(e.description)} · CHF ${chf(e.amountCHF)}</div><img src="${receipts[e.id]}"></div>`).join("");
   document.getElementById("printReport").innerHTML=`
-    <div class="pr-h"><h2>Spesenabrechnung${isYear(filter)?" "+filter:""}</h2><div style="text-align:right;font-size:12px">${filter?yLabel(filter):"Alle Perioden"}<br>erstellt ${dCH(todayISO())}</div></div>
-    <table class="pr-table"><thead><tr><th>Datum</th><th>Kategorie</th><th>Beschreibung</th><th>Händler</th><th class="pr-r">km</th><th class="pr-r">Betrag CHF</th></tr></thead>
-    <tbody>${body}<tr class="pr-total"><td colspan="5">Total ${filter?yLabel(filter):""}</td><td class="pr-r">CHF ${chf(total)}</td></tr></tbody></table>
+    <div class="pr-h"><h2>Spesenabrechnung${isYear(filter)?" "+filter:""}${whoFilter?" · "+escapeHtml(whoFilter):""}</h2><div style="text-align:right;font-size:12px">PMG Immobilien AG<br>${filter?yLabel(filter):"Alle Perioden"}<br>erstellt ${dCH(todayISO())}</div></div>
+    <table class="pr-table"><thead><tr><th>Datum</th><th>Wer</th><th>Kategorie</th><th>Beschreibung</th><th>Händler</th><th class="pr-r">km</th><th class="pr-r">Betrag CHF</th></tr></thead>
+    <tbody>${body}<tr class="pr-total"><td colspan="6">Total ${filter?yLabel(filter):""}</td><td class="pr-r">CHF ${chf(total)}</td></tr></tbody></table>
     ${catSummary}
     ${belege?`<div class="pr-appendix"><h3>Belege</h3><div class="pr-belege">${belege}</div></div>`:""}`;
   window.print();
 }
+
 function exportBackup(){
-  const dump={version:1,exportedAt:new Date().toISOString(),
-    settings:{kmRate:settings.kmRate,lunchRate:settings.lunchRate,model:settings.model},
-    expenses, receipts:Object.entries(receipts).map(([id,data])=>({id,data}))};
+  const dump={version:2,exportedAt:new Date().toISOString(),
+    settings:{kmRate:settings.kmRate,lunchRate:settings.lunchRate},
+    expenses:expenses.map(stripLocal), receipts:Object.entries(receipts).map(([id,data])=>({id,data}))};
   shareOrDownload(new Blob([JSON.stringify(dump)],{type:"application/json"}),`spesen-${todayISO()}.json`)
-    .then(ok=>{ if(ok) toast("Spesen-Datei bereit — am Laptop über Zahnrad → Importieren einlesen."); });
+    .then(ok=>{ if(ok) toast(connected()?"Spesen-Datei bereit.":"Spesen-Datei bereit — am Laptop über Zahnrad → Importieren einlesen."); });
 }
 async function importBackup(file){
   let data; try{data=JSON.parse(await file.text());}catch{return toast("Datei nicht lesbar.");}
   if(!Array.isArray(data.expenses)) return toast("Keine gültige Spesen-Datei.");
   let added=0, updated=0;
-  for(const e of data.expenses){
+  for(const raw of data.expenses){
+    const e={...stripLocal(raw),synced:false,pending:false};
     const existing=expenses.find(x=>x.id===e.id);
+    if(existing && existing.synced) { updated++; continue; } // schon in der Ablage
     if(existing) updated++; else added++;
     await idbPut("expenses",e);
   }
   for(const r of (data.receipts||[])) await idbPut("receipts",r);
-  await boot();
-  toast(`Importiert: ${added} neu${updated?`, ${updated} aktualisiert`:""}.`);
+  await loadLocal(); render();
+  toast(`Importiert: ${added} neu${updated?`, ${updated} schon vorhanden`:""}.`);
+  if(connected() && localOnly().length){
+    if(!settings.who) return openSettings();
+    await uploadLocal();
+  }
 }
 
 /* ============================================================ wire + boot */
@@ -669,21 +894,36 @@ document.getElementById("btnManual").onclick=()=>openEntry(null);
 document.getElementById("btnExcel").onclick=exportSpreadsheet;
 document.getElementById("btnReport").onclick=buildReport;
 document.getElementById("btnScan").onclick=()=>document.getElementById("fileMain").click();
-document.getElementById("fileMain").onchange=async ev=>{
+document.getElementById("fileMain").onchange=ev=>{
   const f=ev.target.files[0]; ev.target.value="";
-  if(!f) return;
-  openEntry(null);
-  const inp=document.querySelector('.scrim .sheet [data-file]');
-  // reuse the modal's scan by simulating a file selection
-  const dt=new DataTransfer(); dt.items.add(f); inp.files=dt.files; inp.dispatchEvent(new Event("change"));
+  if(f) openEntry(null,f);
 };
 document.getElementById("fileImport").onchange=async ev=>{const f=ev.target.files[0];ev.target.value="";if(f)importBackup(f);};
 
-async function boot(){
+async function loadLocal(){
   const [exp,rec]=await Promise.all([idbAll("expenses"),idbAll("receipts")]);
   expenses=exp||[]; receipts={}; (rec||[]).forEach(r=>receipts[r.id]=r.data);
-  render();
 }
+async function sync(){ if(!connected()) return; await flushOutbox(); await refreshFromServer(); }
+
+async function boot(){
+  await loadLocal();
+  await updateOutboxCount();
+  render();
+  const inv=readInvite();
+  if(inv && !connected()){
+    if(await connectWith(inv.u,inv.p)){ await afterConnect(); }
+  }
+  // Links in Spesen-Dateien (z.B. AirDrop) sind ok; Hash bleibt bewusst stehen,
+  // damit „Zum Home-Bildschirm“ auf dem iPhone die Verbindung mitnimmt.
+  await sync();
+}
+window.addEventListener("hashchange",async ()=>{
+  const inv=readInvite();
+  if(inv && !connected() && await connectWith(inv.u,inv.p)) await afterConnect();
+});
+window.addEventListener("online",sync);
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") sync(); });
 boot();
 </script>
 </body>
