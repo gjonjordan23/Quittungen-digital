@@ -21,6 +21,27 @@ Funktionen ohne Rückfrage.
 | `apple-touch-icon.png` | Icon für «Zum Home-Bildschirm». |
 | `test/mock-gas.js`, `test/run.js` | Nachbau der Apps-Script-Dienste und End-to-End-Tests (siehe unten). |
 
+## Fahrtenbuch (`fahrtenbuch/`)
+
+Eigene kleine App im selben Repo, unabhängig von der Spesen-App (kein Backend, kein
+`Code.gs`). Ausgeliefert unter `<Pages-URL>/fahrtenbuch/`.
+
+- `fahrtenbuch/index.html`: ganze App in einer Datei, Vanilla-JS, keine CDN-Abhängigkeit.
+  `fahrtenbuch/sw.js`: Start ohne Netz (zuerst Netz, sonst Zwischenspeicher).
+- Daten nur im Browser: localStorage `fahrtenbuch:v1` (`trips`, `odo`, `config`,
+  `lastBackup`, `setupDone`). Schlüssel nicht ändern, es gibt echte Daten. Gleiche Origin
+  wie die Spesen-App, deshalb eigener Schlüssel.
+- Zweck: Geschäftsfahrten mit einem Tipp erfassen (Datum, Ziel, Zweck, km hin und zurück),
+  monatlicher Kilometerstand, Geschäftsanteil, Kilometergeld pro Jahr (0.70 bis 2025,
+  0.75 ab 2026, je Jahr überschreibbar). Jahresliste (Kopieren, CSV) für die Buchhaltung.
+- Sicherung: .json speichern/einlesen. Einlesen ergänzt nur, löscht und überschreibt nichts.
+- Einrichtungslink `…/fahrtenbuch/#einrichten=<base64url(JSON)>` setzt Fahrzeug, Firma,
+  Startort, Ziele und ersten Kilometerstand. Wirkt nur auf einem leeren Gerät; der Hash
+  bleibt stehen (iPhone «Zum Home-Bildschirm» hat einen eigenen Speicher).
+- Regel 1 gilt auch hier: Fahrzeug, Kontrollschild, Firma, Orte und Namen stehen nie im
+  Quelltext, nur in den Einstellungen bzw. im Einrichtungslink.
+- Test: `node test/fahrtenbuch.js`.
+
 ## Frontend (`index.html`)
 
 - IndexedDB `spesenDB`, Version 2: Stores `expenses` (keyPath `id`), `receipts`

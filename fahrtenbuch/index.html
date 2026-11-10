@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="de-CH">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Fahrten">
+<meta name="theme-color" content="#edf1f4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1318" media="(prefers-color-scheme: dark)">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="apple-touch-icon.png">
+<title>Fahrtenbuch</title>
+<style>
+:root{
+  /* Eine Spalte, Handy zuerst: oben Ziele zum Antippen, darunter Jahressumme und Fahrtenliste */
+  --paper:#edf1f4; --surface:#ffffff; --ink:#14202b; --muted:#586877; --line:#d2dbe3;
+  --accent:#1b58a6; --accent-ink:#ffffff; --accent-soft:#e2ebf7;
+  --warn:#8f5400; --warn-soft:#fbefd9; --ok:#1d7448; --danger:#b3261e;
+  --font-display:"Avenir Next Condensed","Arial Narrow","Roboto Condensed",system-ui,sans-serif;
+  --font-body:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --paper:#0d1318; --surface:#161f28; --ink:#e5ecf2; --muted:#92a3b3; --line:#283542;
+    --accent:#62a0ea; --accent-ink:#081421; --accent-soft:#1a2b3e;
+    --warn:#e6a64c; --warn-soft:#2b2212; --ok:#5cc08d; --danger:#f08a80;
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--paper);color:var(--ink);font-family:var(--font-body);font-size:16px;line-height:1.45;-webkit-text-size-adjust:100%}
+.wrap{max-width:540px;margin:0 auto;display:flex;flex-direction:column;gap:20px;
+  padding:calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(96px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left))}
+header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-family:var(--font-display);font-weight:700;font-size:32px;line-height:1;margin:0;letter-spacing:.01em}
+h2{font-family:var(--font-display);font-weight:600;font-size:21px;line-height:1.1;margin:0;letter-spacing:.02em}
+.sub{color:var(--muted);font-size:14px;margin-top:6px}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--muted);white-space:nowrap}
+.pill::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}
+.pill.ok{color:var(--ok)}
+.pill.warn{color:var(--warn);background:var(--warn-soft);border-color:transparent}
+.banner{background:var(--warn-soft);color:var(--ink);border-left:4px solid var(--warn);border-radius:8px;padding:10px 12px;font-size:14px}
+.banner[hidden]{display:none}
+.section{display:flex;flex-direction:column;gap:10px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font:inherit;font-size:15px;padding:7px 14px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;min-height:38px}
+.chip[aria-pressed="true"],.chip.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+input.chip{width:auto;padding:6px 12px}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tile{font:inherit;text-align:left;display:flex;flex-direction:column;gap:4px;min-height:104px;padding:12px 12px 10px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer}
+.tile:hover{border-color:var(--accent)}
+.tile:active{transform:translateY(1px)}
+.tile .name{font-weight:600;font-size:16px;line-height:1.2;overflow-wrap:anywhere}
+.tile .purpose{font-size:13px;color:var(--muted)}
+.tile .km{margin-top:auto;font-family:var(--font-display);font-weight:600;font-size:21px;color:var(--accent);font-variant-numeric:tabular-nums}
+.tile .km.unset{font-family:var(--font-body);font-size:13px;font-weight:600;color:var(--warn)}
+.tile.other{border-style:dashed;background:transparent}
+.note{font-size:13px;color:var(--muted);margin:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.stat .v{font-family:var(--font-display);font-weight:700;font-size:27px;line-height:1.05;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.stat .l{font-size:12.5px;color:var(--muted);line-height:1.3}
+.odoline{margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
+.odo-cta{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--accent-soft);border-radius:12px;padding:12px 14px}
+.odo-cta b{font-weight:600}
+.btn{font:inherit;font-weight:600;font-size:15px;padding:9px 14px;border-radius:10px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);cursor:pointer;min-height:40px}
+.btn.ghost{background:transparent;color:var(--accent)}
+.btn.danger{background:transparent;color:var(--danger);border-color:var(--danger)}
+.btn[hidden]{display:none}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.list{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.trip{font:inherit;color:inherit;background:transparent;border:0;border-top:1px solid var(--line);text-align:left;display:grid;grid-template-columns:88px 1fr auto;gap:10px;align-items:center;padding:10px 12px;cursor:pointer;width:100%}
+.trip:first-child{border-top:0}
+.trip:hover{background:var(--accent-soft)}
+.trip .d{font-size:13.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.trip .t{display:flex;flex-direction:column;min-width:0}
+.trip .t b{font-weight:600;overflow-wrap:anywhere}
+.trip .t span{font-size:13px;color:var(--muted)}
+.trip .k{font-family:var(--font-display);font-weight:600;font-size:19px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.empty{padding:16px;color:var(--muted);font-size:14px}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+select{font:inherit;font-size:15px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+dialog{border:0;border-radius:14px;padding:0;width:min(460px,calc(100% - 32px));max-height:calc(100% - 32px);background:var(--surface);color:var(--ink);box-shadow:0 20px 60px rgba(0,0,0,.3)}
+dialog::backdrop{background:rgba(10,20,30,.45)}
+dialog form{display:flex;flex-direction:column;gap:12px;padding:18px}
+dialog h3{font-family:var(--font-display);font-weight:600;font-size:23px;margin:0}
+label{display:flex;flex-direction:column;gap:4px;font-size:14px;color:var(--muted)}
+dialog input,dialog textarea{font:inherit;font-size:16px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:9px 10px;width:100%}
+textarea{font-family:ui-monospace,Consolas,monospace;font-size:13px}
+.dlg-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center}
+.dlg-actions .spacer{flex:1}
+.prow{display:grid;grid-template-columns:1fr 86px;gap:8px;align-items:end;padding:10px 0;border-top:1px solid var(--line)}
+.prow .full{grid-column:1 / -1}
+.prow .btn{grid-column:1 / -1;justify-self:start;min-height:34px;padding:5px 10px;font-size:14px}
+.toast{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--paper);border-radius:12px;padding:10px 12px 10px 16px;display:flex;align-items:center;gap:12px;width:max-content;max-width:calc(100% - 32px);box-shadow:0 10px 30px rgba(0,0,0,.25);font-size:15px;z-index:5}
+.toast[hidden]{display:none}
+.toast button{font:inherit;font-weight:600;background:transparent;border:1px solid currentColor;color:inherit;border-radius:8px;padding:5px 10px;cursor:pointer;white-space:nowrap}
+.toast button[hidden]{display:none}
+@media (prefers-reduced-motion: no-preference){
+  .toast{animation:up .18s ease-out}
+  @keyframes up{from{transform:translate(-50%,8px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+}
+@media (max-width:370px){.tiles{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Fahrtenbuch</h1>
+      <div class="sub" id="sub"></div>
+    </div>
+    <span id="status" class="pill">Nur auf diesem Gerät</span>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+
+  <section class="section" aria-labelledby="h-new">
+    <h2 id="h-new">Fahrt erfassen</h2>
+    <div class="chips" role="group" aria-label="Datum der Fahrt">
+      <button type="button" class="chip" id="d-today" aria-pressed="true">Heute</button>
+      <button type="button" class="chip" id="d-yest" aria-pressed="false">Gestern</button>
+      <input type="date" class="chip" id="d-pick" aria-label="Anderes Datum wählen">
+    </div>
+    <div id="tiles" class="tiles"></div>
+    <p class="note" id="hint"></p>
+  </section>
+
+  <div id="odo-cta"></div>
+
+  <section class="section" aria-labelledby="h-sum">
+    <div class="row"><h2 id="h-sum">Jahresübersicht</h2><select id="year" aria-label="Jahr wählen"></select></div>
+    <div id="summary" class="card"></div>
+  </section>
+
+  <section class="section" aria-labelledby="h-list">
+    <div class="row"><h2 id="h-list">Fahrten</h2><span class="note">Antippen zum Ändern oder Löschen</span></div>
+    <div id="list" class="list"></div>
+    <button type="button" id="more" class="btn ghost" hidden>Alle anzeigen</button>
+  </section>
+
+  <section class="section" aria-labelledby="h-out">
+    <h2 id="h-out">Jahresliste und Sicherung</h2>
+    <div class="actions">
+      <button type="button" class="btn" id="b-copy">Jahresliste kopieren</button>
+      <button type="button" class="btn ghost" id="b-csv">Als CSV speichern</button>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn ghost" id="b-backup">Sicherung speichern</button>
+      <button type="button" class="btn ghost" id="b-restore">Sicherung einlesen</button>
+      <input type="file" id="f-restore" accept=".json,application/json" hidden>
+    </div>
+    <p class="note" id="backup-info"></p>
+  </section>
+
+  <div class="actions">
+    <button type="button" class="btn ghost" id="b-odo">Kilometerstand</button>
+    <button type="button" class="btn ghost" id="b-settings">Einstellungen</button>
+  </div>
+</div>
+
+<dialog id="dlg-km"><form id="f-km" novalidate>
+  <h3 id="km-title">km eintragen</h3>
+  <p class="note">Einmal eintragen, wie viele Kilometer es hin und zurück sind. Danach reicht ein Tipp.</p>
+  <label for="km-input">Kilometer hin und zurück<input id="km-input" type="number" inputmode="numeric" min="1" step="1"></label>
+  <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Abbrechen</button><button type="submit" class="btn">Speichern und Fahrt erfassen</button></div>
+</form></dialog>
+
+<dialog id="dlg-trip"><form id="f-trip" novalidate>
+  <h3 id="trip-title">Andere Geschäftsfahrt</h3>
+  <label for="t-date">Datum<input id="t-date" type="date"></label>
+  <label for="t-dest">Ziel<input id="t-dest" type="text" autocomplete="off" placeholder="z.B. Notariat"></label>
+  <label for="t-purpose">Geschäftlicher Zweck<input id="t-purpose" type="text" autocomplete="off" placeholder="z.B. Unterschrift Hypothek"></label>
+  <label for="t-km">Kilometer hin und zurück<input id="t-km" type="number" inputmode="numeric" min="1" step="1"></label>
+  <p class="note" id="t-err" hidden>Bitte Datum, Ziel, Zweck und Kilometer ausfüllen.</p>
+  <div class="dlg-actions"><button type="button" class="btn danger" id="t-del" hidden>Löschen</button><span class="spacer"></span><button type="button" class="btn ghost" data-close>Abbrechen</button><button type="submit" class="btn">Speichern</button></div>
+</form></dialog>
+
+<dialog id="dlg-odo"><form id="f-odo" novalidate>
+  <h3>Kilometerstand</h3>
+  <p class="note">Einmal im Monat den Stand vom Tacho abschreiben. So sieht man, wie viele Kilometer insgesamt und wie viele privat gefahren wurden.</p>
+  <label for="o-month">Monat<input id="o-month" type="month"></label>
+  <label for="o-km">Kilometerstand laut Tacho<input id="o-km" type="number" inputmode="numeric" min="0" step="1"></label>
+  <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Abbrechen</button><button type="submit" class="btn">Speichern</button></div>
+</form></dialog>
+
+<dialog id="dlg-set"><form id="f-set" novalidate>
+  <h3>Einstellungen</h3>
+  <label for="s-vehicle">Fahrzeug und Kontrollschild<input id="s-vehicle" type="text" autocomplete="off"></label>
+  <label for="s-company">Firma<input id="s-company" type="text" autocomplete="off"></label>
+  <label for="s-start">Startort der Fahrten<input id="s-start" type="text" autocomplete="off"></label>
+  <label for="s-rate"><span id="s-rate-l">Kilometergeld in CHF pro km</span><input id="s-rate" type="number" inputmode="decimal" min="0" step="0.01"></label>
+  <p class="note">Gilt für das in der Jahresübersicht gewählte Jahr. Steuerlich anerkannt sind CHF 0.70 bis 2025 und CHF 0.75 ab 2026. Mit der Buchhaltung abstimmen.</p>
+  <h3>Ziele</h3>
+  <div id="s-presets"></div>
+  <button type="button" class="btn ghost" id="s-add">Ziel hinzufügen</button>
+  <button type="button" class="btn ghost" id="s-link">Einrichtungslink kopieren</button>
+  <p class="note">Der Einrichtungslink überträgt Fahrzeug und Ziele auf ein anderes Gerät. Fahrten überträgt die Sicherung.</p>
+  <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Abbrechen</button><button type="submit" class="btn">Speichern</button></div>
+</form></dialog>
+
+<dialog id="dlg-exp"><form id="f-exp" novalidate>
+  <h3 id="exp-title">Jahresliste</h3>
+  <p class="note" id="exp-note">Kopieren und in Excel oder eine Mail einfügen.</p>
+  <textarea id="exp-text" rows="10" readonly></textarea>
+  <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Schliessen</button><button type="button" class="btn" id="exp-copy">Kopieren</button></div>
+</form></dialog>
+
+<div id="toast" class="toast" hidden role="status" aria-live="polite"><span id="toast-msg"></span><button type="button" id="toast-undo">Rückgängig</button></div>
+
+<script>
+(function(){
+"use strict";
+/* Dieses Repo ist öffentlich: keine Namen, Kontrollschilder oder Adressen in diese Datei.
+   Fahrzeug, Firma und Ziele kommen aus den Einstellungen oder aus dem Einrichtungslink. */
+var LKEY="fahrtenbuch:v1";
+var SETUP="#einrichten=";
+var EMPTY_CONFIG={vehicle:"",company:"",start:"",hint:"",rates:{},presets:[]};
+var D={trips:[],odo:{},config:null,lastBackup:null,setupDone:false};
+var S={date:"today",year:new Date().getFullYear(),showAll:false,storageOk:true};
+var MONTHS=["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
+
+function $(id){return document.getElementById(id);}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
+function pad(n){return String(n).padStart(2,"0");}
+function iso(d){return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());}
+function monthKey(d){return d.getFullYear()+"-"+pad(d.getMonth()+1);}
+function odoDate(month){var now=new Date();if(month===monthKey(now))return iso(now);var p=month.split("-").map(Number);return iso(new Date(p[0],p[1],0));}
+function fmtKm(n){return Math.round(n||0).toLocaleString("de-CH");}
+function fmtChf(n){return (n||0).toLocaleString("de-CH",{minimumFractionDigits:2,maximumFractionDigits:2});}
+function fmtDate(s){var p=s.split("-").map(Number);return new Date(p[0],p[1]-1,p[2]).toLocaleDateString("de-CH",{weekday:"short",day:"2-digit",month:"2-digit"});}
+function fmtDateFull(s){var p=s.split("-");return p[2]+"."+p[1]+"."+p[0];}
+function monthLabel(k){var p=k.split("-");return MONTHS[+p[1]-1]+" "+p[0];}
+function newId(){return "t"+Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
+function clone(o){return JSON.parse(JSON.stringify(o));}
+function num(v){var n=parseFloat(String(v).replace(",","."));return isFinite(n)?n:NaN;}
+function str(v,max){return typeof v==="string"?v.slice(0,max||200):"";}
+function isDate(s){return typeof s==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(s)&&!isNaN(new Date(s).getTime());}
+function isMonth(s){return typeof s==="string"&&/^\d{4}-(0[1-9]|1[0-2])$/.test(s);}
+
+/* ---------- Prüfen fremder Daten (Sicherung, Einrichtungslink) ---------- */
+function cleanTrip(t){
+  if(!t||typeof t!=="object"||!isDate(t.date))return null;
+  var km=Math.round(+t.km);if(!(km>0)||km>100000)return null;
+  var dest=str(t.dest).trim();if(!dest)return null;
+  return {id:(typeof t.id==="string"&&/^[\w-]{1,40}$/.test(t.id))?t.id:newId(),date:t.date,dest:dest,purpose:str(t.purpose).trim(),km:km,
+    presetId:(typeof t.presetId==="string")?t.presetId.slice(0,40):null,createdAt:(typeof t.createdAt==="number")?t.createdAt:Date.now()};
+}
+function cleanOdo(month,o){
+  if(!isMonth(month)||!o||typeof o!=="object")return null;
+  var km=Math.round(+o.km);if(!(km>=0)||km>5000000)return null;
+  var r={month:month,km:km,date:isDate(o.date)?o.date:month+"-01"};
+  if(typeof o.note==="string"&&o.note)r.note=o.note.slice(0,200);
+  return r;
+}
+function cleanConfig(c){
+  var r=clone(EMPTY_CONFIG);if(!c||typeof c!=="object")return r;
+  r.vehicle=str(c.vehicle,80);r.company=str(c.company,80);r.start=str(c.start,80);r.hint=str(c.hint,300);
+  if(c.rates&&typeof c.rates==="object"){Object.keys(c.rates).forEach(function(y){var v=+c.rates[y];if(/^\d{4}$/.test(y)&&v>=0&&v<=5)r.rates[y]=Math.round(v*100)/100;});}
+  if(Array.isArray(c.presets)){c.presets.slice(0,30).forEach(function(p,i){
+    if(!p||typeof p!=="object")return;var name=str(p.name,80).trim();if(!name)return;var km=Math.round(+p.km);
+    r.presets.push({id:(typeof p.id==="string"&&/^[\w-]{1,40}$/.test(p.id))?p.id:"p"+i+Date.now().toString(36),name:name,purpose:str(p.purpose,80).trim(),km:(km>0&&km<=100000)?km:null});
+  });}
+  return r;
+}
+
+/* ---------- Speichern: alles liegt im Speicher dieses Browsers ---------- */
+function load(){
+  try{
+    var v=JSON.parse(localStorage.getItem(LKEY)||"null");
+    if(v&&typeof v==="object"){
+      D.trips=(Array.isArray(v.trips)?v.trips:[]).map(cleanTrip).filter(Boolean);
+      D.odo={};if(v.odo&&typeof v.odo==="object")Object.keys(v.odo).forEach(function(k){var o=cleanOdo(k,v.odo[k]);if(o)D.odo[k]=o;});
+      D.config=v.config?cleanConfig(v.config):null;
+      D.lastBackup=isDate(v.lastBackup)?v.lastBackup:null;
+      D.setupDone=!!v.setupDone;
+    }
+  }catch(e){S.storageOk=false;}
+}
+function save(){
+  try{localStorage.setItem(LKEY,JSON.stringify(D));S.storageOk=true;return true;}
+  catch(e){S.storageOk=false;return false;}
+}
+function cfg(){return D.config||EMPTY_CONFIG;}
+/* Ansatz pro Jahr: bis 2025 CHF 0.70, ab 2026 CHF 0.75, ausser es ist für das Jahr ein eigener Wert gespeichert */
+function rateFor(y){var r=cfg().rates[String(y)];return (typeof r==="number"&&r>=0)?r:(y<=2025?0.70:0.75);}
+function allTrips(){
+  return D.trips.slice().sort(function(a,b){if(a.date!==b.date)return a.date<b.date?1:-1;return (b.createdAt||0)-(a.createdAt||0);});
+}
+function selDate(){
+  if(S.date==="today")return iso(new Date());
+  if(S.date==="yesterday"){var d=new Date();d.setDate(d.getDate()-1);return iso(d);}
+  return S.date;
+}
+function saveTrip(t){
+  var i=D.trips.findIndex(function(x){return x.id===t.id;});
+  if(i>=0)D.trips[i]=t;else D.trips.push(t);
+  if(!save())toast("Dieser Browser speichert nichts. Bitte Safari oder Chrome ohne Privatmodus verwenden.");
+  render();
+}
+function removeTrip(t){D.trips=D.trips.filter(function(x){return x.id!==t.id;});save();render();}
+function saveOdo(month,km){D.odo[month]={month:month,km:Math.round(km),date:odoDate(month)};save();render();}
+function saveConfig(c){D.config=cleanConfig(c);D.setupDone=true;save();render();}
+
+/* ---------- Einrichtungslink: #einrichten=<base64url(JSON)> ----------
+   Der Hash bleibt absichtlich stehen, damit «Zum Home-Bildschirm» auf dem iPhone
+   die Einrichtung mitnimmt (die Home-Bildschirm-App hat einen eigenen Speicher). */
+function b64uEncode(s){var b=new TextEncoder().encode(s),bin="";for(var i=0;i<b.length;i++)bin+=String.fromCharCode(b[i]);return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");}
+function b64uDecode(s){s=s.replace(/-/g,"+").replace(/_/g,"/");while(s.length%4)s+="=";var bin=atob(s),b=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return new TextDecoder().decode(b);}
+function setupPayload(){
+  var c=cfg(),keys=Object.keys(D.odo).sort();
+  var p={v:c.vehicle,c:c.company,s:c.start,h:c.hint,r:c.rates,p:c.presets.map(function(x){return [x.name,x.purpose,x.km];})};
+  if(keys.length){var o=D.odo[keys[0]];p.o=[[o.month,o.km,o.date,o.note||""]];}
+  return p;
+}
+function setupLink(){return location.href.split("#")[0]+SETUP+b64uEncode(JSON.stringify(setupPayload()));}
+function applySetupFromHash(){
+  if(D.setupDone||D.trips.length||location.hash.indexOf(SETUP)!==0)return false;
+  try{
+    var p=JSON.parse(b64uDecode(location.hash.slice(SETUP.length)));
+    if(!p||typeof p!=="object")return false;
+    D.config=cleanConfig({vehicle:p.v,company:p.c,start:p.s,hint:p.h,rates:p.r,
+      presets:(Array.isArray(p.p)?p.p:[]).map(function(x,i){return Array.isArray(x)?{id:"z"+(i+1),name:x[0],purpose:x[1],km:x[2]}:null;})});
+    (Array.isArray(p.o)?p.o:[]).forEach(function(x){
+      if(!Array.isArray(x))return;var o=cleanOdo(x[0],{km:x[1],date:x[2],note:x[3]});if(o&&!D.odo[o.month])D.odo[o.month]=o;
+    });
+    D.setupDone=true;save();return true;
+  }catch(e){return false;}
+}
+
+/* ---------- Erfassen ---------- */
+var lastSaved=null,lastTap=0,kmPreset=null,editing=null,draft=null,toastTimer=null;
+function setDate(v){
+  S.date=v;
+  $("d-today").setAttribute("aria-pressed",String(v==="today"));
+  $("d-yest").setAttribute("aria-pressed",String(v==="yesterday"));
+  if(v==="today"||v==="yesterday"){$("d-pick").value="";$("d-pick").classList.remove("on");}
+}
+function logTrip(p,km){
+  var t={id:newId(),date:selDate(),dest:p.name,purpose:p.purpose,km:Math.round(km),presetId:p.id,createdAt:Date.now()};
+  lastSaved=t;
+  toast(fmtDate(t.date)+": "+p.name+" · "+fmtKm(t.km)+" km",true);
+  setDate("today");
+  saveTrip(t);
+}
+function onTile(p){if(!(p.km>0)){openKm(p);return;}logTrip(p,p.km);}
+function openKm(p){
+  kmPreset=p;$("km-title").textContent=p.name;$("km-input").value="";
+  $("dlg-km").showModal();setTimeout(function(){$("km-input").focus();},50);
+}
+function openTrip(t){
+  editing=t||null;
+  $("trip-title").textContent=t?"Fahrt ändern":"Andere Geschäftsfahrt";
+  $("t-date").max=iso(new Date());
+  $("t-date").value=t?t.date:selDate();
+  $("t-dest").value=t?t.dest:"";
+  $("t-purpose").value=t?t.purpose:"";
+  $("t-km").value=t?t.km:"";
+  $("t-err").hidden=true;
+  var del=$("t-del");del.hidden=!t;del.dataset.confirm="";del.textContent="Löschen";
+  $("dlg-trip").showModal();
+}
+function openOdo(){
+  var k=monthKey(new Date());var cur=D.odo[k];
+  $("o-month").value=k;$("o-km").value=cur?cur.km:"";
+  $("dlg-odo").showModal();setTimeout(function(){$("o-km").focus();},50);
+}
+function openSettings(){
+  draft=clone(cfg());
+  $("s-vehicle").value=draft.vehicle;$("s-company").value=draft.company;$("s-start").value=draft.start;
+  $("s-rate-l").textContent="Kilometergeld "+S.year+" in CHF pro km";
+  $("s-rate").value=rateFor(S.year).toFixed(2);
+  renderPresetRows();$("dlg-set").showModal();
+}
+function renderPresetRows(){
+  $("s-presets").innerHTML=draft.presets.length?draft.presets.map(function(p,i){
+    return '<div class="prow">'+
+      '<label class="full" for="p-name-'+i+'">Ziel<input id="p-name-'+i+'" data-i="'+i+'" data-f="name" value="'+esc(p.name)+'"></label>'+
+      '<label for="p-purp-'+i+'">Zweck<input id="p-purp-'+i+'" data-i="'+i+'" data-f="purpose" value="'+esc(p.purpose)+'"></label>'+
+      '<label for="p-km-'+i+'">km hin+zurück<input id="p-km-'+i+'" data-i="'+i+'" data-f="km" type="number" inputmode="numeric" min="1" step="1" value="'+(p.km>0?esc(p.km):"")+'"></label>'+
+      '<button type="button" class="btn danger" data-del="'+i+'">Ziel entfernen</button></div>';
+  }).join(""):'<p class="note">Noch keine Ziele. Füge die Orte hinzu, die du regelmässig geschäftlich anfährst.</p>';
+}
+
+/* ---------- Anzeige ---------- */
+function daysSince(d){return Math.floor((new Date(iso(new Date()))-new Date(d))/86400000);}
+/* Fällig, wenn es Fahrten gibt und die letzte Sicherung (oder ohne Sicherung die erste Erfassung) über einen Monat her ist */
+function backupDue(){
+  if(!D.trips.length)return false;
+  if(D.lastBackup)return daysSince(D.lastBackup)>31;
+  var first=Math.min.apply(null,D.trips.map(function(t){return t.createdAt||Date.now();}));
+  return (Date.now()-first)/86400000>31;
+}
+function renderStatus(){
+  var st=$("status"),bn=$("banner"),ban="";
+  if(!S.storageOk){st.className="pill warn";st.textContent="Speichert nicht";
+    ban="Dieser Browser speichert nichts (Privatmodus oder Speicher gesperrt). Erfasste Fahrten gehen beim Schliessen verloren.";}
+  else if(backupDue()){st.className="pill warn";st.textContent="Sicherung fällig";
+    ban="Die Fahrten liegen nur auf diesem Gerät. Tippe unten auf «Sicherung speichern» und lege die Datei in die Ablage, sonst sind sie bei einem Handywechsel weg.";}
+  else{st.className="pill ok";st.textContent="Nur auf diesem Gerät";}
+  bn.hidden=!ban;bn.textContent=ban;
+  $("backup-info").textContent=D.lastBackup?"Letzte Sicherung: "+fmtDateFull(D.lastBackup)+". Die Sicherung enthält alle Jahre.":"Noch keine Sicherung gespeichert. Die Sicherung enthält alle Jahre.";
+}
+function renderHead(){
+  var c=cfg(),parts=[];
+  if(c.vehicle)parts.push(c.vehicle);
+  parts.push(c.company?"Geschäftsfahrten "+c.company:"Geschäftsfahrten");
+  $("sub").textContent=parts.join(" · ");
+  $("hint").textContent="Ein Tipp erfasst eine Fahrt hin und zurück. "+(c.hint||"Nur Geschäftsfahrten erfassen, keine privaten.");
+}
+function renderTiles(){
+  var c=cfg();
+  $("tiles").innerHTML=c.presets.map(function(p,i){
+    return '<button type="button" class="tile" data-p="'+i+'"><span class="name">'+esc(p.name)+'</span><span class="purpose">'+esc(p.purpose)+'</span>'+
+      (p.km>0?'<span class="km">'+fmtKm(p.km)+' km</span>':'<span class="km unset">km einmal eintragen</span>')+'</button>';
+  }).join("")+'<button type="button" class="tile other" id="t-other"><span class="name">Andere Geschäftsfahrt</span><span class="purpose">Ziel, Zweck und km selbst eintragen</span><span class="km">+</span></button>'+
+  (c.presets.length?'':'<button type="button" class="tile other" id="t-setup"><span class="name">Ziele anlegen</span><span class="purpose">Orte, die du oft anfährst, mit einem Tipp erfassen</span><span class="km">+</span></button>');
+}
+function renderOdoCta(){
+  var now=new Date();var has=!!D.odo[monthKey(now)];
+  $("odo-cta").innerHTML=has?"":'<div class="odo-cta"><span><b>Kilometerstand '+MONTHS[now.getMonth()]+'</b><br><span class="note">Einmal pro Monat vom Tacho abschreiben.</span></span><button type="button" class="btn" id="odo-go">Eintragen</button></div>';
+  var b=$("odo-go");if(b)b.addEventListener("click",openOdo);
+}
+function yearsAvail(){
+  var ys={};ys[new Date().getFullYear()]=1;
+  D.trips.forEach(function(t){ys[+t.date.slice(0,4)]=1;});
+  Object.keys(D.odo).forEach(function(k){ys[+k.slice(0,4)]=1;});
+  return Object.keys(ys).map(Number).sort(function(a,b){return b-a;});
+}
+function renderYearSelect(){
+  var sel=$("year"),ys=yearsAvail();
+  if(ys.indexOf(S.year)<0)S.year=ys[0];
+  sel.innerHTML=ys.map(function(y){return '<option value="'+y+'">'+y+'</option>';}).join("");sel.value=String(S.year);
+}
+function odoStats(y){
+  var o=D.odo;var keys=Object.keys(o).sort();
+  var inYear=keys.filter(function(k){return k.indexOf(y+"-")===0;});
+  var prevDec=(y-1)+"-12";
+  var startKey=keys.indexOf(prevDec)>=0?prevDec:(inYear[0]||null);
+  var endKey=inYear.length?inYear[inYear.length-1]:null;
+  var lastKey=keys.length?keys[keys.length-1]:null;
+  if(!startKey||!endKey||startKey===endKey)return {total:null,last:lastKey?o[lastKey]:null,lastKey:lastKey};
+  var s=o[startKey],e=o[endKey];
+  var bkm=D.trips.filter(function(t){return t.date>s.date&&t.date<=e.date;}).reduce(function(a,t){return a+t.km;},0);
+  return {total:e.km-s.km,bkm:bkm,sd:s.date,ed:e.date,last:o[lastKey],lastKey:lastKey};
+}
+function lifeText(){
+  var keys=Object.keys(D.odo).sort();if(keys.length<2)return "";
+  var a=D.odo[keys[0]],b=D.odo[keys[keys.length-1]];
+  var days=(new Date(b.date)-new Date(a.date))/86400000;
+  if(!(days>=30)||!(b.km>a.km))return "";
+  var perYear=Math.round((b.km-a.km)/days*365/100)*100;
+  return "Seit "+fmtDateFull(a.date)+" total "+fmtKm(b.km-a.km)+" km gefahren, das sind rund "+fmtKm(perYear)+" km pro Jahr.";
+}
+function renderSummary(){
+  var y=S.year,rate=rateFor(y),life=lifeText();
+  var ts=D.trips.filter(function(t){return t.date.indexOf(y+"-")===0;});
+  var km=ts.reduce(function(a,t){return a+t.km;},0);
+  var os=odoStats(y),odo;
+  if(os.total!=null){
+    odo="Laut Tacho vom "+fmtDateFull(os.sd)+" bis "+fmtDateFull(os.ed)+" insgesamt "+fmtKm(os.total)+" km gefahren, davon "+fmtKm(os.bkm)+" km geschäftlich. Privat also rund "+fmtKm(Math.max(os.total-os.bkm,0))+" km.";
+    if(os.total>0){odo+=" Geschäftsanteil rund "+Math.round(os.bkm/os.total*100)+" %. Als Geschäftsfahrzeug gilt ein Auto erst bei über 50 %.";}
+  }else if(os.last){
+    odo="Letzter Kilometerstand: "+fmtKm(os.last.km)+" km ("+monthLabel(os.lastKey)+"). Ab zwei Einträgen im Jahr zeigt die App, wie viel privat gefahren wurde.";
+  }else{
+    odo="Noch kein Kilometerstand. Einmal im Monat eintragen, dann zeigt die App, wie viel privat gefahren wurde.";
+  }
+  $("summary").innerHTML='<div class="stats">'+
+    '<div class="stat"><div class="v">'+ts.length+'</div><div class="l">Geschäftsfahrten '+y+'</div></div>'+
+    '<div class="stat"><div class="v">'+fmtKm(km)+'</div><div class="l">km geschäftlich</div></div>'+
+    '<div class="stat"><div class="v">'+fmtChf(km*rate)+'</div><div class="l">CHF Kilometergeld (à '+fmtChf(rate)+')</div></div>'+
+    '</div><div class="odoline">'+esc(odo)+'</div>'+(life?'<div class="odoline">'+esc(life)+'</div>':'');
+}
+function renderList(){
+  var ts=allTrips().filter(function(t){return t.date.indexOf(S.year+"-")===0;});
+  var show=S.showAll?ts:ts.slice(0,12);
+  $("list").innerHTML=show.length?show.map(function(t){
+    return '<button type="button" class="trip" data-id="'+esc(t.id)+'"><span class="d">'+esc(fmtDate(t.date))+'</span><span class="t"><b>'+esc(t.dest)+'</b><span>'+esc(t.purpose)+'</span></span><span class="k">'+fmtKm(t.km)+' km</span></button>';
+  }).join(""):'<div class="empty">Noch keine Fahrt in '+S.year+'. Tippe oben auf ein Ziel.</div>';
+  var more=$("more");more.hidden=ts.length<=12;more.textContent=S.showAll?"Weniger anzeigen":"Alle "+ts.length+" anzeigen";
+}
+function render(){renderStatus();renderHead();renderTiles();renderOdoCta();renderYearSelect();renderSummary();renderList();}
+
+/* ---------- Jahresliste, CSV, Sicherung ---------- */
+function exportRows(y){
+  var ts=allTrips().filter(function(t){return t.date.indexOf(y+"-")===0;}).reverse();
+  var km=ts.reduce(function(a,t){return a+t.km;},0),r=rateFor(y);
+  return {ts:ts,km:km,chf:km*r,rate:r};
+}
+function odoKeysFor(y){return Object.keys(D.odo).sort().filter(function(k){return k.indexOf(y+"-")===0||k===(y-1)+"-12";});}
+function exportTitle(y){var c=cfg();return "Fahrtenbuch"+(c.vehicle?" "+c.vehicle:"")+" – Geschäftsfahrten"+(c.company?" "+c.company:"")+" "+y;}
+function exportStart(){var c=cfg();return c.start?"Alle Fahrten ab "+c.start+", hin und zurück.":"Alle Fahrten hin und zurück.";}
+function exportText(y){
+  var r=exportRows(y),L=[];
+  L.push(exportTitle(y));L.push(exportStart());
+  L.push(["Datum","Ziel","Zweck","km"].join("\t"));
+  r.ts.forEach(function(t){L.push([fmtDateFull(t.date),t.dest,t.purpose,t.km].join("\t"));});
+  L.push("");L.push("Total km\t"+r.km);L.push("Ansatz CHF/km\t"+r.rate.toFixed(2));L.push("Kilometergeld CHF\t"+r.chf.toFixed(2));
+  var ks=odoKeysFor(y);
+  if(ks.length){L.push("");L.push("Kilometerstände");ks.forEach(function(k){L.push(fmtDateFull(D.odo[k].date)+"\t"+D.odo[k].km);});}
+  return L.join("\n");
+}
+function exportCsv(y){
+  var r=exportRows(y);
+  /* Texte, die mit = + - @ beginnen, bekommen ein Apostroph: Excel soll sie nicht als Formel lesen */
+  function q(s){s=String(s);if(/^[=+\-@]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';}
+  var L=[q(exportTitle(y))+";;;",q(exportStart())+";;;","Datum;Ziel;Zweck;km"];
+  r.ts.forEach(function(t){L.push([fmtDateFull(t.date),q(t.dest),q(t.purpose),t.km].join(";"));});
+  L.push("");L.push("Total km;;;"+r.km);L.push("Ansatz CHF/km;;;"+r.rate.toFixed(2));L.push("Kilometergeld CHF;;;"+r.chf.toFixed(2));
+  var ks=odoKeysFor(y);
+  if(ks.length){L.push("");L.push("Kilometerstand;;;");ks.forEach(function(k){L.push(fmtDateFull(D.odo[k].date)+";;;"+D.odo[k].km);});}
+  return "﻿"+L.join("\r\n");
+}
+async function saveFile(name,text,type){
+  var blob=new Blob([text],{type:type});
+  var touch=window.matchMedia&&window.matchMedia("(pointer:coarse)").matches;
+  if(touch&&navigator.canShare&&typeof File==="function"){
+    try{
+      var f=new File([blob],name,{type:type});
+      if(navigator.canShare({files:[f]})){await navigator.share({files:[f],title:name});return true;}
+    }catch(e){if(e&&e.name==="AbortError")return false;}
+  }
+  var a=document.createElement("a"),url=URL.createObjectURL(blob);
+  a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(function(){URL.revokeObjectURL(url);},4000);
+  return true;
+}
+function backupJson(){return JSON.stringify({app:"fahrtenbuch",version:1,exportedAt:new Date().toISOString(),trips:D.trips,odo:D.odo,config:cfg()},null,1);}
+/* Einlesen ergänzt nur: nichts wird gelöscht oder überschrieben */
+function mergeBackup(v){
+  if(!v||typeof v!=="object"||v.app!=="fahrtenbuch"||!Array.isArray(v.trips))throw new Error("format");
+  var have={},addedT=0,addedO=0;D.trips.forEach(function(t){have[t.id]=1;});
+  v.trips.forEach(function(x){var t=cleanTrip(x);if(t&&!have[t.id]){D.trips.push(t);have[t.id]=1;addedT++;}});
+  if(v.odo&&typeof v.odo==="object")Object.keys(v.odo).forEach(function(k){var o=cleanOdo(k,v.odo[k]);if(o&&!D.odo[k]){D.odo[k]=o;addedO++;}});
+  if(!D.config&&v.config){D.config=cleanConfig(v.config);D.setupDone=true;}
+  save();
+  return {trips:addedT,odo:addedO};
+}
+
+/* ---------- Hinweis unten ---------- */
+function toast(msg,undo){
+  var el=$("toast");$("toast-msg").textContent=msg;$("toast-undo").hidden=!undo;el.hidden=false;
+  clearTimeout(toastTimer);toastTimer=setTimeout(function(){el.hidden=true;if(undo)lastSaved=null;},undo?7000:3600);
+}
+function showText(title,note,txt){$("exp-title").textContent=title;$("exp-note").textContent=note;$("exp-text").value=txt;$("dlg-exp").showModal();}
+
+/* ---------- Ereignisse ---------- */
+$("d-today").addEventListener("click",function(){setDate("today");});
+$("d-yest").addEventListener("click",function(){setDate("yesterday");});
+$("d-pick").addEventListener("change",function(e){
+  var v=e.target.value;
+  if(isDate(v)){S.date=v;$("d-today").setAttribute("aria-pressed","false");$("d-yest").setAttribute("aria-pressed","false");e.target.classList.add("on");}
+  else setDate("today");
+});
+$("tiles").addEventListener("click",function(e){
+  var b=e.target.closest(".tile");if(!b)return;
+  if(b.id==="t-other"){openTrip(null);return;}
+  if(b.id==="t-setup"){openSettings();return;}
+  if(Date.now()-lastTap<1500)return;lastTap=Date.now();
+  var p=cfg().presets[+b.dataset.p];if(p)onTile(p);
+});
+$("list").addEventListener("click",function(e){
+  var b=e.target.closest(".trip");if(!b)return;
+  var t=D.trips.find(function(x){return x.id===b.dataset.id;});if(t)openTrip(t);
+});
+$("more").addEventListener("click",function(){S.showAll=!S.showAll;renderList();});
+$("year").addEventListener("change",function(e){S.year=+e.target.value;S.showAll=false;render();});
+$("b-odo").addEventListener("click",openOdo);
+$("b-settings").addEventListener("click",openSettings);
+Array.prototype.forEach.call(document.querySelectorAll("[data-close]"),function(b){b.addEventListener("click",function(){b.closest("dialog").close();});});
+
+$("f-km").addEventListener("submit",function(e){
+  e.preventDefault();var km=num($("km-input").value);if(!(km>0)){$("km-input").focus();return;}
+  $("dlg-km").close();km=Math.round(km);
+  var c=clone(cfg());var cp=c.presets.find(function(x){return x.id===kmPreset.id;});if(cp)cp.km=km;
+  D.config=cleanConfig(c);D.setupDone=true;
+  logTrip(Object.assign({},kmPreset,{km:km}),km);
+});
+$("f-trip").addEventListener("submit",function(e){
+  e.preventDefault();
+  var date=$("t-date").value,dest=$("t-dest").value.trim(),purpose=$("t-purpose").value.trim(),km=num($("t-km").value);
+  if(!isDate(date)||!dest||!purpose||!(km>0)){$("t-err").hidden=false;return;}
+  $("dlg-trip").close();
+  var wasEdit=!!editing;
+  var t=wasEdit?Object.assign({},editing,{date:date,dest:dest,purpose:purpose,km:Math.round(km)}):{id:newId(),date:date,dest:dest,purpose:purpose,km:Math.round(km),presetId:null,createdAt:Date.now()};
+  if(wasEdit){toast("Fahrt geändert");}else{lastSaved=t;toast("Erfasst: "+dest+" · "+fmtKm(t.km)+" km",true);setDate("today");}
+  saveTrip(t);
+});
+$("t-del").addEventListener("click",function(){
+  var b=$("t-del");if(!editing)return;
+  if(b.dataset.confirm!=="1"){b.dataset.confirm="1";b.textContent="Wirklich löschen?";return;}
+  var t=editing;$("dlg-trip").close();removeTrip(t);toast("Fahrt gelöscht");
+});
+$("f-odo").addEventListener("submit",function(e){
+  e.preventDefault();var m=$("o-month").value,km=num($("o-km").value);
+  if(!isMonth(m)||!(km>=0)){$("o-km").focus();return;}
+  $("dlg-odo").close();saveOdo(m,km);toast("Kilometerstand "+monthLabel(m)+" gespeichert");
+});
+$("s-presets").addEventListener("input",function(e){
+  var el=e.target,i=+el.dataset.i,f=el.dataset.f;if(!draft||isNaN(i)||!f||!draft.presets[i])return;
+  if(f==="km"){var v=num(el.value);draft.presets[i].km=v>0?Math.round(v):null;}else draft.presets[i][f]=el.value;
+});
+$("s-presets").addEventListener("click",function(e){
+  var b=e.target.closest("[data-del]");if(!b)return;draft.presets.splice(+b.dataset.del,1);renderPresetRows();
+});
+$("s-add").addEventListener("click",function(){
+  draft.presets.push({id:"p"+Date.now().toString(36),name:"",purpose:"",km:null});renderPresetRows();
+  var i=draft.presets.length-1;setTimeout(function(){var el=$("p-name-"+i);if(el)el.focus();},30);
+});
+function readDraft(){
+  var rate=num($("s-rate").value);if(!(rate>=0))return false;
+  draft.vehicle=$("s-vehicle").value.trim();draft.company=$("s-company").value.trim();draft.start=$("s-start").value.trim();
+  draft.rates=draft.rates||{};draft.rates[String(S.year)]=Math.round(rate*100)/100;
+  return true;
+}
+$("f-set").addEventListener("submit",function(e){
+  e.preventDefault();if(!readDraft()){$("s-rate").focus();return;}
+  $("dlg-set").close();saveConfig(draft);toast("Gespeichert");
+});
+$("s-link").addEventListener("click",async function(){
+  if(!readDraft()){$("s-rate").focus();return;}
+  saveConfig(draft);draft=clone(cfg());
+  var link=setupLink();
+  try{await navigator.clipboard.writeText(link);toast("Einrichtungslink kopiert");}
+  catch(e){$("dlg-set").close();showText("Einrichtungslink","Diesen Link auf dem anderen Gerät öffnen.",link);}
+});
+$("toast-undo").addEventListener("click",function(){
+  var t=lastSaved;lastSaved=null;$("toast").hidden=true;
+  if(t){removeTrip(t);toast("Rückgängig gemacht");}
+});
+$("b-copy").addEventListener("click",async function(){
+  var txt=exportText(S.year);
+  try{await navigator.clipboard.writeText(txt);toast("Jahresliste "+S.year+" kopiert");}
+  catch(e){showText("Jahresliste "+S.year,"Kopieren und in Excel oder eine Mail einfügen.",txt);}
+});
+$("exp-copy").addEventListener("click",async function(){
+  var ta=$("exp-text");ta.focus();ta.select();
+  try{await navigator.clipboard.writeText(ta.value);toast("Kopiert");}
+  catch(e){$("exp-note").textContent="Der Text ist markiert. Mit Ctrl+C (PC) oder «Kopieren» (Handy) übernehmen.";}
+});
+$("b-csv").addEventListener("click",async function(){
+  try{await saveFile("Fahrtenbuch_"+S.year+".csv",exportCsv(S.year),"text/csv");}
+  catch(e){toast("Speichern hat nicht geklappt. «Jahresliste kopieren» geht immer.");}
+});
+$("b-backup").addEventListener("click",async function(){
+  try{
+    if(await saveFile("Fahrtenbuch_Sicherung_"+iso(new Date())+".json",backupJson(),"application/json")){
+      D.lastBackup=iso(new Date());save();render();toast("Sicherung erstellt. Lege die Datei in die Ablage.");
+    }
+  }catch(e){showText("Sicherung","Speichern hat nicht geklappt. Diesen Text kopieren und als Datei oder Mail aufbewahren.",backupJson());}
+});
+$("b-restore").addEventListener("click",function(){$("f-restore").value="";$("f-restore").click();});
+$("f-restore").addEventListener("change",async function(e){
+  var f=e.target.files&&e.target.files[0];if(!f)return;
+  try{
+    if(f.size>5000000)throw new Error("size");
+    var r=mergeBackup(JSON.parse(await f.text()));
+    render();toast(r.trips+(r.trips===1?" Fahrt":" Fahrten")+" und "+r.odo+(r.odo===1?" Kilometerstand":" Kilometerstände")+" ergänzt");
+  }catch(err){toast("Das ist keine Sicherung dieser App.");}
+});
+
+/* ---------- Start ---------- */
+load();
+var fresh=applySetupFromHash();
+setDate("today");$("d-pick").max=iso(new Date());render();
+if(fresh)toast("Eingerichtet. Jetzt «Zum Home-Bildschirm» hinzufügen.");
+try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(function(){});}catch(e){}
+/* Ohne Netz starten: sw.js legt die Seite in den Zwischenspeicher */
+if("serviceWorker" in navigator&&/^https?:$/.test(location.protocol)){
+  window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){});});
+}
+})();
+</script>
+</body>
+</html>
