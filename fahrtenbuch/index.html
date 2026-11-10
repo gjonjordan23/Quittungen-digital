@@ -447,6 +447,36 @@ function connErrText(e){
   if(k==="server")return "Die Ablage meldet einen Fehler: "+e.message;
   return "Keine Verbindung zur Ablage. Bitte Netz prüfen und nochmals versuchen.";
 }
+/* Zwischenablage lesen. Das iPhone legt beim Teilen («Kopieren») Text und Link als getrennte
+   Einträge ab; ins Eingabefeld eingesetzt wird dann oft nur der Text. Darum alle Einträge lesen. */
+async function readClipboardText(){
+  var parts=[];
+  try{
+    if(navigator.clipboard&&navigator.clipboard.read){
+      var items=await navigator.clipboard.read();
+      for(var i=0;i<items.length;i++){
+        for(var j=0;j<items[i].types.length;j++){
+          var type=items[i].types[j];
+          if(/^text\/(plain|uri-list|html)$/.test(type)){parts.push(await (await items[i].getType(type)).text());}
+        }
+      }
+    }
+  }catch(e){}
+  if(!parts.length){try{if(navigator.clipboard&&navigator.clipboard.readText)parts.push(await navigator.clipboard.readText());}catch(e){}}
+  return parts.join(" ");
+}
+function inviteProblem(raw){
+  raw=String(raw||"").trim();
+  if(!raw)return "Das Feld ist leer. Tippe auf «Aus Zwischenablage einfügen».";
+  if(raw.indexOf("verbinden=")<0)return "Eingefügt wurde nur Text ohne Link: «"+raw.slice(0,50)+(raw.length>50?"…":"")+"». Das iPhone kopiert beim Teilen Text und Link getrennt. Tippe auf «Aus Zwischenablage einfügen».";
+  return "Der Link ist unvollständig. Bitte in der Spesen-App nochmals kopieren.";
+}
+async function connectInvite(inv,btn){
+  btn.disabled=true;btn.textContent="Verbinde …";
+  try{await connect(inv.u,inv.p);$("dlg-set").close();toast("Mit der Firmenablage verbunden.");}
+  catch(err){renderConn(connErrText(err));}
+}
+
 /* Link aus der Spesen-App: …#verbinden=<base64url(JSON {u: Web-App-URL, p: Zugangscode})> */
 function parseInvite(text){
   var m=String(text||"").match(/verbinden=([A-Za-z0-9_-]+)/);if(!m)return null;
@@ -574,12 +604,15 @@ function renderStatus(){
     :(D.lastBackup?"Letzte Sicherung: "+fmtDateFull(D.lastBackup)+". Die Sicherung enthält alle Jahre.":"Noch keine Sicherung gespeichert. Die Sicherung enthält alle Jahre.");
 }
 function renderConn(msg){
+  var prev=$("c-link")?$("c-link").value:"";
   $("s-conn").innerHTML=connected()
     ?'<p class="note">Verbunden mit der Firmenablage. Jede Fahrt wird dort im Blatt «Fahrten» gespeichert.'+(D.lastSync?' Zuletzt abgeglichen: '+esc(fmtDateTime(D.lastSync))+'.':'')+'</p>'+
      '<div class="actions"><button type="button" class="btn ghost" id="c-sync">Jetzt abgleichen</button><button type="button" class="btn danger" id="c-off">Verbindung trennen</button></div>'
     :'<p class="note">Nicht verbunden: Die Fahrten liegen nur auf diesem Gerät. In der Spesen-App unter «Einstellungen» auf «Link für weiteres Handy teilen» tippen, den Link kopieren und hier einfügen.</p>'+
-     '<label for="c-link">Link aus der Spesen-App<input id="c-link" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"></label>'+
-     '<div class="actions"><button type="button" class="btn" id="c-on">Verbinden</button></div>';
+     '<div class="actions"><button type="button" class="btn" id="c-paste">Aus Zwischenablage einfügen</button></div>'+
+     '<label for="c-link">oder Link hier einsetzen<input id="c-link" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label>'+
+     '<div class="actions"><button type="button" class="btn ghost" id="c-on">Verbinden</button></div>';
+  if($("c-link"))$("c-link").value=prev;
   var m=$("c-msg");m.hidden=!msg;m.textContent=msg||"";
 }
 function renderHead(){
@@ -811,10 +844,18 @@ $("s-conn").addEventListener("click",async function(e){
   var b=e.target.closest("button");if(!b)return;
   if(b.id==="c-on"){
     var inv=parseInvite($("c-link").value);
-    if(!inv){renderConn("Das ist kein Link aus der Spesen-App. Er enthält «#verbinden=».");return;}
-    b.disabled=true;b.textContent="Verbinde …";
-    try{await connect(inv.u,inv.p);$("dlg-set").close();toast("Mit der Firmenablage verbunden.");}
-    catch(err){renderConn(connErrText(err));}
+    if(!inv){renderConn(inviteProblem($("c-link").value));return;}
+    await connectInvite(inv,b);
+  }else if(b.id==="c-paste"){
+    var txt=await readClipboardText();
+    var inv2=parseInvite(txt);
+    if(!inv2){
+      renderConn(txt.trim()?"In der Zwischenablage ist kein Link aus der Spesen-App. Dort unter «Einstellungen» auf «Link für weiteres Handy teilen» und dann auf «Kopieren» tippen."
+        :"Die Zwischenablage ist leer oder darf nicht gelesen werden. Den Link ins Feld unten einsetzen.");
+      return;
+    }
+    var m2=txt.match(/https?:\/\/\S*verbinden=[A-Za-z0-9_-]+/);$("c-link").value=m2?m2[0]:"";
+    await connectInvite(inv2,b);
   }else if(b.id==="c-sync"){
     b.disabled=true;await sync();renderConn(S.syncErr?connErrText(S.syncErr==="offline"?null:{server:true,message:S.syncErr==="old"?"unknown_action":S.syncErr}):"Abgeglichen.");
   }else if(b.id==="c-off"){

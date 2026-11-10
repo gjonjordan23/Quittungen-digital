@@ -193,6 +193,7 @@ const server = http.createServer((req, res) => {
   const waitRows = async (n, count) => { const t0 = Date.now(); while (Date.now() - t0 < 8000) { if (sheetRows(n).length === count) return true; await new Promise((r) => setTimeout(r, 50)); } return false; };
   async function device(url) {
     const c = await browser.newContext({ locale: "de-CH" });
+    await c.grantPermissions(["clipboard-read", "clipboard-write"]);
     const pg = await c.newPage();
     pg.on("pageerror", (e) => errors.push(String(e)));
     await pg.goto(url);
@@ -212,10 +213,21 @@ const server = http.createServer((req, res) => {
   await A.pg.locator("#b-settings").click();
   await A.pg.locator("#c-link").fill("https://beispiel.invalid/irgendwas");
   await A.pg.locator("#c-on").click();
-  ok((await A.pg.locator("#c-msg").textContent()).includes("kein Link"), "falscher Link wird abgelehnt");
+  ok((await A.pg.locator("#c-msg").textContent()).includes("nur Text ohne Link"), "falscher Link wird abgelehnt");
+  ok((await A.pg.locator("#c-link").inputValue()) === "https://beispiel.invalid/irgendwas", "nach der Meldung bleibt der Inhalt im Feld");
+  await A.pg.locator("#c-link").fill("Spesen-App: Link öffnen, dann „Zum Home-Bildschirm“ hinzufügen.");
+  await A.pg.locator("#c-on").click();
+  ok((await A.pg.locator("#c-msg").textContent()).includes("nur Text ohne Link"), "nur der Begleittext (iPhone-Teilen): klare Meldung");
+  await A.pg.locator("#c-link").fill("");
+  await A.pg.locator("#c-on").click();
+  ok((await A.pg.locator("#c-msg").textContent()).includes("Feld ist leer"), "leeres Feld: eigene Meldung");
+  await A.pg.evaluate(() => navigator.clipboard.writeText("nur ein Satz"));
+  await A.pg.locator("#c-paste").click();
+  await A.pg.waitForFunction(() => document.querySelector("#c-msg").textContent.includes("kein Link aus der Spesen-App"));
+  ok(true, "Zwischenablage ohne Link: Meldung");
   await A.pg.locator("#c-link").fill(invite("falsch"));
   await A.pg.locator("#c-on").click();
-  await A.pg.waitForFunction(() => !document.querySelector("#c-msg").hidden);
+  await A.pg.waitForFunction(() => document.querySelector("#c-msg").textContent.includes("Zugangscode"), null, { timeout: 8000 }).catch(() => {});
   ok((await A.pg.locator("#c-msg").textContent()).includes("Zugangscode"), "falscher Zugangscode wird gemeldet");
   ok(sheetRows("Fahrten").length === 0, "falscher Zugangscode schreibt nichts");
 
@@ -316,10 +328,11 @@ const server = http.createServer((req, res) => {
   };
   const C = await device(app);
   await C.pg.locator("#b-settings").click();
-  await C.pg.locator("#c-link").fill(invite());
-  await C.pg.locator("#c-on").click();
-  await C.pg.waitForFunction(() => !document.querySelector("#c-msg").hidden);
-  ok((await C.pg.locator("#c-msg").textContent()).includes("kennt das Fahrtenbuch noch nicht"), "alte Ablage: klare Meldung statt Datenverlust");
+  await C.pg.evaluate((t) => navigator.clipboard.writeText(t), "Spesen-App: Link öffnen, dann „Zum Home-Bildschirm“ hinzufügen. " + invite());
+  await C.pg.locator("#c-paste").click();
+  await C.pg.waitForFunction(() => document.querySelector("#c-msg").textContent.includes("kennt das Fahrtenbuch"), null, { timeout: 8000 }).catch(() => {});
+  ok((await C.pg.locator("#c-msg").textContent()).includes("kennt das Fahrtenbuch noch nicht"), "Knopf «Aus Zwischenablage einfügen» liest Text mit Link; alte Ablage: klare Meldung");
+  ok((await C.pg.locator("#c-link").inputValue()).startsWith("https://beispiel.invalid/app/#verbinden="), "der Link steht danach im Feld");
   gas.ctx.doPost = origPost;
   await A.c.close(); await B.c.close(); await C.c.close();
   srv.close();
