@@ -202,11 +202,12 @@ function startServers(gas) {
   });
   const app = http.createServer((req, res) => {
     const u = new URL(req.url, "http://x").pathname;
-    const f = u === "/" ? "index.html" : u.slice(1);
+    let f = u === "/" ? "index.html" : u.slice(1);
+    if (f.endsWith("/")) f += "index.html"; // Unterordner wie fahrtenbuch/
     if (f === "blank.html") { res.writeHead(200, { "Content-Type": "text/html" }); return res.end("<!doctype html><title>x</title>"); }
     const p = path.join(root, f);
     if (!p.startsWith(root) || !fs.existsSync(p)) { res.writeHead(404); return res.end(); }
-    const type = f.endsWith(".html") ? "text/html; charset=utf-8" : f.endsWith(".png") ? "image/png" : "application/octet-stream";
+    const type = f.endsWith(".html") ? "text/html; charset=utf-8" : f.endsWith(".png") ? "image/png" : f.endsWith(".js") ? "text/javascript" : "application/octet-stream";
     res.writeHead(200, { "Content-Type": type });
     fs.createReadStream(p).pipe(res);
   });

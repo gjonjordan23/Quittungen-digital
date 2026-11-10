@@ -198,8 +198,12 @@ textarea{font-family:ui-monospace,Consolas,monospace;font-size:13px}
   <h3>Ziele</h3>
   <div id="s-presets"></div>
   <button type="button" class="btn ghost" id="s-add">Ziel hinzufügen</button>
+  <h3>Firmenablage</h3>
+  <div id="s-conn"></div>
+  <p class="note" id="c-msg" hidden></p>
+  <h3>Weiteres Gerät</h3>
   <button type="button" class="btn ghost" id="s-link">Einrichtungslink kopieren</button>
-  <p class="note">Der Einrichtungslink überträgt Fahrzeug und Ziele auf ein anderes Gerät. Fahrten überträgt die Sicherung.</p>
+  <p class="note">Der Einrichtungslink richtet ein anderes Gerät ein. Mit Firmenablage enthält er auch den Zugang dazu: nur an eigene Geräte schicken.</p>
   <div class="dlg-actions"><button type="button" class="btn ghost" data-close>Abbrechen</button><button type="submit" class="btn">Speichern</button></div>
 </form></dialog>
 
@@ -220,8 +224,8 @@ textarea{font-family:ui-monospace,Consolas,monospace;font-size:13px}
 var LKEY="fahrtenbuch:v1";
 var SETUP="#einrichten=";
 var EMPTY_CONFIG={vehicle:"",company:"",start:"",hint:"",rates:{},presets:[]};
-var D={trips:[],odo:{},config:null,lastBackup:null,setupDone:false};
-var S={date:"today",year:new Date().getFullYear(),showAll:false,storageOk:true};
+var D={trips:[],odo:{},config:null,lastBackup:null,setupDone:false,conn:null,outbox:[],lastSync:null,noAuto:false};
+var S={date:"today",year:new Date().getFullYear(),showAll:false,storageOk:true,syncErr:"",syncAgain:false,busy:null};
 var MONTHS=["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
 
 function $(id){return document.getElementById(id);}
@@ -268,7 +272,23 @@ function cleanConfig(c){
   return r;
 }
 
-/* ---------- Speichern: alles liegt im Speicher dieses Browsers ---------- */
+/* Adresse der Ablage: nur die Web-App von Google (und der lokale Testserver) */
+function okUrl(u){return typeof u==="string"&&u.length<400&&(/^https:\/\/script\.google\.com\//.test(u)||/^http:\/\/(127\.0\.0\.1|localhost):\d+\//.test(u));}
+function cleanConn(c){
+  if(!c||typeof c!=="object"||!okUrl(c.u)||typeof c.p!=="string"||!c.p||c.p.length>200)return null;
+  return {u:c.u,p:c.p};
+}
+function cleanOp(o){
+  if(!o||typeof o!=="object"||typeof o.key!=="string")return null;
+  var r={key:o.key.slice(0,60),action:o.action,ts:+o.ts||Date.now()};
+  if(o.action==="fahrtSave"){r.trip=cleanTrip(o.trip);return r.trip?r:null;}
+  if(o.action==="fahrtDelete"){if(typeof o.id!=="string"||!o.id)return null;r.id=o.id.slice(0,40);return r;}
+  if(o.action==="odoSave"){r.odo=o.odo?cleanOdo(o.odo.month,o.odo):null;return r.odo?r:null;}
+  if(o.action==="fahrtenConfig"){r.config=cleanConfig(o.config);return r;}
+  return null;
+}
+
+/* ---------- Speichern: zuerst im Speicher dieses Browsers, mit Verbindung zusätzlich in der Firmenablage ---------- */
 function load(){
   try{
     var v=JSON.parse(localStorage.getItem(LKEY)||"null");
@@ -278,6 +298,10 @@ function load(){
       D.config=v.config?cleanConfig(v.config):null;
       D.lastBackup=isDate(v.lastBackup)?v.lastBackup:null;
       D.setupDone=!!v.setupDone;
+      D.conn=cleanConn(v.conn);
+      D.outbox=(Array.isArray(v.outbox)?v.outbox:[]).map(cleanOp).filter(Boolean);
+      D.lastSync=(typeof v.lastSync==="string")?v.lastSync.slice(0,30):null;
+      D.noAuto=!!v.noAuto;
     }
   }catch(e){S.storageOk=false;}
 }
@@ -299,12 +323,142 @@ function selDate(){
 function saveTrip(t){
   var i=D.trips.findIndex(function(x){return x.id===t.id;});
   if(i>=0)D.trips[i]=t;else D.trips.push(t);
+  if(connected())enqueue({key:"trip:"+t.id,action:"fahrtSave",trip:t});
   if(!save())toast("Dieser Browser speichert nichts. Bitte Safari oder Chrome ohne Privatmodus verwenden.");
-  render();
+  render();sync();
 }
-function removeTrip(t){D.trips=D.trips.filter(function(x){return x.id!==t.id;});save();render();}
-function saveOdo(month,km){D.odo[month]={month:month,km:Math.round(km),date:odoDate(month)};save();render();}
-function saveConfig(c){D.config=cleanConfig(c);D.setupDone=true;save();render();}
+function removeTrip(t){
+  D.trips=D.trips.filter(function(x){return x.id!==t.id;});
+  if(connected())enqueue({key:"trip:"+t.id,action:"fahrtDelete",id:t.id});
+  save();render();sync();
+}
+function saveOdo(month,km){
+  D.odo[month]={month:month,km:Math.round(km),date:odoDate(month)};
+  if(connected())enqueue({key:"odo:"+month,action:"odoSave",odo:D.odo[month]});
+  save();render();sync();
+}
+function setConfig(c){
+  D.config=cleanConfig(c);D.setupDone=true;
+  if(connected())enqueue({key:"config",action:"fahrtenConfig",config:D.config});
+}
+function saveConfig(c){setConfig(c);save();render();sync();}
+
+/* ---------- Firmenablage: dieselbe Google-Tabelle wie die Spesen-App (Blätter «Fahrten», «Kilometerstand») ----------
+   Jede Änderung geht zuerst in die Warteschlange (outbox) und dann an die Ablage. Ohne Netz bleibt sie
+   in der Warteschlange. Die Ablage ist die Wahrheit; was noch in der Warteschlange steht, gewinnt lokal. */
+function connected(){return !!(D.conn&&D.conn.u&&D.conn.p);}
+async function api(action,payload){
+  var res=await fetch(D.conn.u,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body:JSON.stringify(Object.assign({},payload||{},{action:action,pin:D.conn.p}))});
+  var data;
+  try{data=await res.json();}catch(e){var e1=new Error("Antwort der Ablage nicht lesbar");e1.server=true;throw e1;}
+  if(!data||!data.ok){var e2=new Error((data&&data.error)||"Fehler");e2.server=true;throw e2;}
+  return data;
+}
+var opSeq=0;
+function enqueue(op){
+  D.outbox=D.outbox.filter(function(o){return o.key!==op.key;});
+  op.ts=Date.now()*1000+(opSeq++%1000);D.outbox.push(op);
+}
+function dropOp(op){D.outbox=D.outbox.filter(function(o){return !(o.key===op.key&&o.ts===op.ts);});}
+function opPayload(op){
+  if(op.action==="fahrtSave")return {trip:op.trip,wer:"Fahrtenbuch"};
+  if(op.action==="fahrtDelete")return {id:op.id,wer:"Fahrtenbuch"};
+  if(op.action==="odoSave")return {odo:op.odo,wer:"Fahrtenbuch"};
+  return {config:op.config};
+}
+function errKind(e){return !e||!e.server?"offline":e.message==="pin"?"pin":e.message==="unknown_action"?"old":"server";}
+async function flush(){
+  var ops=D.outbox.slice().sort(function(a,b){return a.ts-b.ts;});
+  for(var i=0;i<ops.length;i++){
+    var op=ops[i];if(op.failed)continue;
+    try{await api(op.action,opPayload(op));dropOp(op);save();}
+    catch(e){
+      var kind=errKind(e);
+      if(kind!=="server"){S.syncErr=kind;return;}
+      if(/bereits gelöscht/.test(e.message)){
+        /* in der Ablage gelöscht: auch hier entfernen, nicht nochmals senden */
+        dropOp(op);if(op.action==="fahrtSave")D.trips=D.trips.filter(function(t){return t.id!==op.trip.id;});
+        save();continue;
+      }
+      var cur=D.outbox.find(function(o){return o.key===op.key&&o.ts===op.ts;});
+      if(cur)cur.failed=String(e.message).slice(0,120);
+      save();
+    }
+  }
+}
+function applyServer(r){
+  var pend={};D.outbox.forEach(function(o){pend[o.key]=o;});
+  var srv=(Array.isArray(r.trips)?r.trips:[]).map(cleanTrip).filter(Boolean);
+  /* Leere Ablage, aber Fahrten auf dem Gerät (Blatt gelöscht oder neue Tabelle): Gerät lädt sie wieder hoch */
+  if(!srv.length&&D.trips.length){
+    D.trips.forEach(function(t){if(!pend["trip:"+t.id]){enqueue({key:"trip:"+t.id,action:"fahrtSave",trip:t});}});
+    pend={};D.outbox.forEach(function(o){pend[o.key]=o;});S.syncAgain=true;
+  }
+  var trips=[],seen={};
+  srv.forEach(function(t){
+    var p=pend["trip:"+t.id];if(p&&p.action==="fahrtDelete")return;
+    seen[t.id]=1;
+    if(p&&p.action==="fahrtSave"){trips.push(D.trips.find(function(x){return x.id===t.id;})||p.trip);}else trips.push(t);
+  });
+  D.trips.forEach(function(t){var p=pend["trip:"+t.id];if(!seen[t.id]&&p&&p.action==="fahrtSave")trips.push(t);});
+  D.trips=trips;
+  var odo={};
+  (Array.isArray(r.odo)?r.odo:[]).forEach(function(x){var o=x&&cleanOdo(x.month,x);if(o&&!pend["odo:"+o.month])odo[o.month]=o;});
+  Object.keys(D.odo).forEach(function(m){if(pend["odo:"+m])odo[m]=D.odo[m];});
+  D.odo=odo;
+  if(r.config&&!pend.config){D.config=cleanConfig(r.config);D.setupDone=true;}
+}
+async function refresh(){
+  try{var r=await api("fahrten");applyServer(r);D.lastSync=new Date().toISOString();save();}
+  catch(e){S.syncErr=errKind(e);}
+}
+function sync(){
+  if(!connected())return Promise.resolve();
+  if(S.busy){S.syncAgain=true;return S.busy;}
+  S.syncErr="";
+  S.busy=(async function(){
+    try{await flush();if(!S.syncErr)await refresh();}
+    finally{S.busy=null;render();if(S.syncAgain){S.syncAgain=false;sync();}}
+  })();
+  renderStatus();
+  return S.busy;
+}
+/* Verbinden führt zusammen: was nur auf dem Gerät liegt, wird hochgeladen; sonst gilt die Ablage */
+async function connect(u,p){
+  var prev=D.conn;D.conn={u:u,p:p};
+  var r;
+  try{r=await api("fahrten");}catch(e){D.conn=prev;throw e;}
+  var onSrv={},odoSrv={};
+  (Array.isArray(r.trips)?r.trips:[]).forEach(function(t){if(t&&t.id)onSrv[t.id]=1;});
+  (Array.isArray(r.odo)?r.odo:[]).forEach(function(o){if(o&&o.month)odoSrv[o.month]=1;});
+  D.outbox=[];D.noAuto=false;S.syncErr="";
+  D.trips.forEach(function(t){if(!onSrv[t.id])enqueue({key:"trip:"+t.id,action:"fahrtSave",trip:t});});
+  Object.keys(D.odo).forEach(function(m){if(!odoSrv[m])enqueue({key:"odo:"+m,action:"odoSave",odo:D.odo[m]});});
+  if(!r.config&&D.config)enqueue({key:"config",action:"fahrtenConfig",config:D.config});
+  applyServer(r);D.lastSync=new Date().toISOString();save();render();
+  await sync();
+}
+function disconnect(){D.conn=null;D.outbox=[];D.noAuto=true;S.syncErr="";save();render();}
+function connErrText(e){
+  var k=errKind(e);
+  if(k==="pin")return "Die Ablage lehnt den Zugangscode ab. Bitte den Link in der Spesen-App neu kopieren.";
+  if(k==="old")return "Die Ablage kennt das Fahrtenbuch noch nicht. Zuerst Code.gs im Apps-Script-Editor ersetzen und neu bereitstellen.";
+  if(k==="server")return "Die Ablage meldet einen Fehler: "+e.message;
+  return "Keine Verbindung zur Ablage. Bitte Netz prüfen und nochmals versuchen.";
+}
+/* Link aus der Spesen-App: …#verbinden=<base64url(JSON {u: Web-App-URL, p: Zugangscode})> */
+function parseInvite(text){
+  var m=String(text||"").match(/verbinden=([A-Za-z0-9_-]+)/);if(!m)return null;
+  try{return cleanConn(JSON.parse(b64uDecode(m[1])));}catch(e){return null;}
+}
+function inviteFromHash(){
+  var h=location.hash||"",inv=parseInvite(h);if(inv)return inv;
+  if(h.indexOf(SETUP)===0){
+    try{var p=JSON.parse(b64uDecode(h.slice(SETUP.length)));if(p&&Array.isArray(p.k))return cleanConn({u:p.k[0],p:p.k[1]});}catch(e){}
+  }
+  return null;
+}
 
 /* ---------- Einrichtungslink: #einrichten=<base64url(JSON)> ----------
    Der Hash bleibt absichtlich stehen, damit «Zum Home-Bildschirm» auf dem iPhone
@@ -315,6 +469,7 @@ function setupPayload(){
   var c=cfg(),keys=Object.keys(D.odo).sort();
   var p={v:c.vehicle,c:c.company,s:c.start,h:c.hint,r:c.rates,p:c.presets.map(function(x){return [x.name,x.purpose,x.km];})};
   if(keys.length){var o=D.odo[keys[0]];p.o=[[o.month,o.km,o.date,o.note||""]];}
+  if(connected())p.k=[D.conn.u,D.conn.p];
   return p;
 }
 function setupLink(){return location.href.split("#")[0]+SETUP+b64uEncode(JSON.stringify(setupPayload()));}
@@ -374,7 +529,7 @@ function openSettings(){
   $("s-vehicle").value=draft.vehicle;$("s-company").value=draft.company;$("s-start").value=draft.start;
   $("s-rate-l").textContent="Kilometergeld "+S.year+" in CHF pro km";
   $("s-rate").value=rateFor(S.year).toFixed(2);
-  renderPresetRows();$("dlg-set").showModal();
+  renderPresetRows();renderConn();$("dlg-set").showModal();
 }
 function renderPresetRows(){
   $("s-presets").innerHTML=draft.presets.length?draft.presets.map(function(p,i){
@@ -395,15 +550,37 @@ function backupDue(){
   var first=Math.min.apply(null,D.trips.map(function(t){return t.createdAt||Date.now();}));
   return (Date.now()-first)/86400000>31;
 }
+function fmtDateTime(v){var d=new Date(v);return isNaN(d.getTime())?"":d.toLocaleString("de-CH",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"});}
 function renderStatus(){
-  var st=$("status"),bn=$("banner"),ban="";
-  if(!S.storageOk){st.className="pill warn";st.textContent="Speichert nicht";
+  var st=$("status"),bn=$("banner"),ban="",cls="pill ok",txt="Nur auf diesem Gerät";
+  var n=D.outbox.length,failed=D.outbox.filter(function(o){return o.failed;});
+  if(!S.storageOk){cls="pill warn";txt="Speichert nicht";
     ban="Dieser Browser speichert nichts (Privatmodus oder Speicher gesperrt). Erfasste Fahrten gehen beim Schliessen verloren.";}
-  else if(backupDue()){st.className="pill warn";st.textContent="Sicherung fällig";
+  else if(connected()){
+    txt="In der Ablage gespeichert";
+    if(S.busy){cls="pill";txt=n?"Speichert …":"Gleicht ab …";}
+    else if(S.syncErr==="pin"){cls="pill warn";txt="Zugangscode falsch";
+      ban="Die Ablage lehnt den Zugangscode ab. Unter «Einstellungen» die Verbindung trennen und mit einem neuen Link aus der Spesen-App verbinden. Die Fahrten bleiben auf diesem Gerät.";}
+    else if(S.syncErr==="old"){cls="pill warn";txt="Ablage veraltet";
+      ban="Die Ablage kennt das Fahrtenbuch noch nicht. Code.gs im Apps-Script-Editor ersetzen und neu bereitstellen. Bis dahin bleiben die Fahrten auf diesem Gerät.";}
+    else if(n){cls="pill warn";txt=n+" ausstehend";
+      ban=failed.length?failed.length+(failed.length===1?" Eintrag":" Einträge")+" konnte die Ablage nicht speichern: "+failed[0].failed
+        :"Noch nicht in der Ablage. Wird gesendet, sobald das Handy wieder Netz hat.";}
+  }
+  else if(backupDue()){cls="pill warn";txt="Sicherung fällig";
     ban="Die Fahrten liegen nur auf diesem Gerät. Tippe unten auf «Sicherung speichern» und lege die Datei in die Ablage, sonst sind sie bei einem Handywechsel weg.";}
-  else{st.className="pill ok";st.textContent="Nur auf diesem Gerät";}
-  bn.hidden=!ban;bn.textContent=ban;
-  $("backup-info").textContent=D.lastBackup?"Letzte Sicherung: "+fmtDateFull(D.lastBackup)+". Die Sicherung enthält alle Jahre.":"Noch keine Sicherung gespeichert. Die Sicherung enthält alle Jahre.";
+  st.className=cls;st.textContent=txt;bn.hidden=!ban;bn.textContent=ban;
+  $("backup-info").textContent=connected()?"Die Fahrten liegen in der Firmenablage. Eine Sicherung als Datei ist zusätzlich möglich."
+    :(D.lastBackup?"Letzte Sicherung: "+fmtDateFull(D.lastBackup)+". Die Sicherung enthält alle Jahre.":"Noch keine Sicherung gespeichert. Die Sicherung enthält alle Jahre.");
+}
+function renderConn(msg){
+  $("s-conn").innerHTML=connected()
+    ?'<p class="note">Verbunden mit der Firmenablage. Jede Fahrt wird dort im Blatt «Fahrten» gespeichert.'+(D.lastSync?' Zuletzt abgeglichen: '+esc(fmtDateTime(D.lastSync))+'.':'')+'</p>'+
+     '<div class="actions"><button type="button" class="btn ghost" id="c-sync">Jetzt abgleichen</button><button type="button" class="btn danger" id="c-off">Verbindung trennen</button></div>'
+    :'<p class="note">Nicht verbunden: Die Fahrten liegen nur auf diesem Gerät. In der Spesen-App unter «Einstellungen» auf «Link für weiteres Handy teilen» tippen, den Link kopieren und hier einfügen.</p>'+
+     '<label for="c-link">Link aus der Spesen-App<input id="c-link" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"></label>'+
+     '<div class="actions"><button type="button" class="btn" id="c-on">Verbinden</button></div>';
+  var m=$("c-msg");m.hidden=!msg;m.textContent=msg||"";
 }
 function renderHead(){
   var c=cfg(),parts=[];
@@ -534,10 +711,12 @@ function backupJson(){return JSON.stringify({app:"fahrtenbuch",version:1,exporte
 function mergeBackup(v){
   if(!v||typeof v!=="object"||v.app!=="fahrtenbuch"||!Array.isArray(v.trips))throw new Error("format");
   var have={},addedT=0,addedO=0;D.trips.forEach(function(t){have[t.id]=1;});
-  v.trips.forEach(function(x){var t=cleanTrip(x);if(t&&!have[t.id]){D.trips.push(t);have[t.id]=1;addedT++;}});
-  if(v.odo&&typeof v.odo==="object")Object.keys(v.odo).forEach(function(k){var o=cleanOdo(k,v.odo[k]);if(o&&!D.odo[k]){D.odo[k]=o;addedO++;}});
-  if(!D.config&&v.config){D.config=cleanConfig(v.config);D.setupDone=true;}
-  save();
+  v.trips.forEach(function(x){var t=cleanTrip(x);if(t&&!have[t.id]){D.trips.push(t);have[t.id]=1;addedT++;
+    if(connected())enqueue({key:"trip:"+t.id,action:"fahrtSave",trip:t});}});
+  if(v.odo&&typeof v.odo==="object")Object.keys(v.odo).forEach(function(k){var o=cleanOdo(k,v.odo[k]);if(o&&!D.odo[k]){D.odo[k]=o;addedO++;
+    if(connected())enqueue({key:"odo:"+k,action:"odoSave",odo:o});}});
+  if(!D.config&&v.config)setConfig(v.config);
+  save();sync();
   return {trips:addedT,odo:addedO};
 }
 
@@ -577,7 +756,7 @@ $("f-km").addEventListener("submit",function(e){
   e.preventDefault();var km=num($("km-input").value);if(!(km>0)){$("km-input").focus();return;}
   $("dlg-km").close();km=Math.round(km);
   var c=clone(cfg());var cp=c.presets.find(function(x){return x.id===kmPreset.id;});if(cp)cp.km=km;
-  D.config=cleanConfig(c);D.setupDone=true;
+  setConfig(c);
   logTrip(Object.assign({},kmPreset,{km:km}),km);
 });
 $("f-trip").addEventListener("submit",function(e){
@@ -628,6 +807,21 @@ $("s-link").addEventListener("click",async function(){
   try{await navigator.clipboard.writeText(link);toast("Einrichtungslink kopiert");}
   catch(e){$("dlg-set").close();showText("Einrichtungslink","Diesen Link auf dem anderen Gerät öffnen.",link);}
 });
+$("s-conn").addEventListener("click",async function(e){
+  var b=e.target.closest("button");if(!b)return;
+  if(b.id==="c-on"){
+    var inv=parseInvite($("c-link").value);
+    if(!inv){renderConn("Das ist kein Link aus der Spesen-App. Er enthält «#verbinden=».");return;}
+    b.disabled=true;b.textContent="Verbinde …";
+    try{await connect(inv.u,inv.p);$("dlg-set").close();toast("Mit der Firmenablage verbunden.");}
+    catch(err){renderConn(connErrText(err));}
+  }else if(b.id==="c-sync"){
+    b.disabled=true;await sync();renderConn(S.syncErr?connErrText(S.syncErr==="offline"?null:{server:true,message:S.syncErr==="old"?"unknown_action":S.syncErr}):"Abgeglichen.");
+  }else if(b.id==="c-off"){
+    if(b.dataset.confirm!=="1"){b.dataset.confirm="1";b.textContent="Wirklich trennen?";return;}
+    disconnect();renderConn("Verbindung getrennt. Die Daten in der Ablage und auf diesem Gerät bleiben erhalten.");
+  }
+});
 $("toast-undo").addEventListener("click",function(){
   var t=lastSaved;lastSaved=null;$("toast").hidden=true;
   if(t){removeTrip(t);toast("Rückgängig gemacht");}
@@ -668,6 +862,13 @@ load();
 var fresh=applySetupFromHash();
 setDate("today");$("d-pick").max=iso(new Date());render();
 if(fresh)toast("Eingerichtet. Jetzt «Zum Home-Bildschirm» hinzufügen.");
+if(connected())sync();
+else if(!D.noAuto){
+  var inv0=inviteFromHash();
+  if(inv0)connect(inv0.u,inv0.p).then(function(){toast("Mit der Firmenablage verbunden.");}).catch(function(e){toast(connErrText(e));});
+}
+window.addEventListener("online",function(){sync();});
+document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")sync();});
 try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(function(){});}catch(e){}
 /* Ohne Netz starten: sw.js legt die Seite in den Zwischenspeicher */
 if("serviceWorker" in navigator&&/^https?:$/.test(location.protocol)){

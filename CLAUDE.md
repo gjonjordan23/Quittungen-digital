@@ -23,24 +23,38 @@ Funktionen ohne Rückfrage.
 
 ## Fahrtenbuch (`fahrtenbuch/`)
 
-Eigene kleine App im selben Repo, unabhängig von der Spesen-App (kein Backend, kein
-`Code.gs`). Ausgeliefert unter `<Pages-URL>/fahrtenbuch/`.
+Eigene kleine App im selben Repo. Ausgeliefert unter `<Pages-URL>/fahrtenbuch/`. Sie nutzt
+dieselbe Firmenablage wie die Spesen-App (gleiche Web-App-URL, gleicher Zugangscode), aber
+eigene Blätter und eigene `doPost`-Aktionen. Die Spesen-`index.html` weiss nichts davon.
 
 - `fahrtenbuch/index.html`: ganze App in einer Datei, Vanilla-JS, keine CDN-Abhängigkeit.
   `fahrtenbuch/sw.js`: Start ohne Netz (zuerst Netz, sonst Zwischenspeicher).
-- Daten nur im Browser: localStorage `fahrtenbuch:v1` (`trips`, `odo`, `config`,
-  `lastBackup`, `setupDone`). Schlüssel nicht ändern, es gibt echte Daten. Gleiche Origin
-  wie die Spesen-App, deshalb eigener Schlüssel.
+- localStorage `fahrtenbuch:v1` (`trips`, `odo`, `config`, `lastBackup`, `setupDone`,
+  `conn` {u,p}, `outbox`, `lastSync`, `noAuto`). Schlüssel nicht ändern, es gibt echte
+  Daten. Gleiche Origin wie die Spesen-App, deshalb eigener Schlüssel.
+- Ohne Verbindung: alles lokal («Nur auf diesem Gerät»), Sicherung als .json.
+- Mit Verbindung: jede Änderung zuerst in `outbox` (ein Eintrag pro `trip:<id>`,
+  `odo:<Monat>`, `config`), dann `sync()` = `flush()` + `refresh()`. Auslöser: jede
+  Änderung, Start, `online`, `visibilitychange`. Die Ablage ist die Wahrheit; was noch in
+  der `outbox` steht, gewinnt lokal. Liefert die Ablage keine Fahrten, das Gerät hat aber
+  welche (Blatt gelöscht), lädt das Gerät sie wieder hoch.
+- Verbinden: Link der Spesen-App (`#verbinden=…`) in den Einstellungen einfügen oder die
+  App mit diesem Hash öffnen. `connect()` führt zusammen: nur lokal Vorhandenes wird
+  hochgeladen, sonst gilt die Ablage. Nach «Verbindung trennen» verbindet der Hash nicht
+  mehr von selbst (`noAuto`). Erlaubte Adressen: nur `https://script.google.com/…`.
+- Alte Ablage ohne Fahrtenbuch-Aktionen antwortet `unknown_action`: die App meldet das
+  und behält alles lokal.
 - Zweck: Geschäftsfahrten mit einem Tipp erfassen (Datum, Ziel, Zweck, km hin und zurück),
   monatlicher Kilometerstand, Geschäftsanteil, Kilometergeld pro Jahr (0.70 bis 2025,
   0.75 ab 2026, je Jahr überschreibbar). Jahresliste (Kopieren, CSV) für die Buchhaltung.
 - Sicherung: .json speichern/einlesen. Einlesen ergänzt nur, löscht und überschreibt nichts.
 - Einrichtungslink `…/fahrtenbuch/#einrichten=<base64url(JSON)>` setzt Fahrzeug, Firma,
-  Startort, Ziele und ersten Kilometerstand. Wirkt nur auf einem leeren Gerät; der Hash
-  bleibt stehen (iPhone «Zum Home-Bildschirm» hat einen eigenen Speicher).
+  Startort, Ziele und ersten Kilometerstand, mit Verbindung auch den Zugang (`k`). Wirkt
+  nur auf einem leeren Gerät; der Hash bleibt stehen (iPhone «Zum Home-Bildschirm» hat
+  einen eigenen Speicher).
 - Regel 1 gilt auch hier: Fahrzeug, Kontrollschild, Firma, Orte und Namen stehen nie im
   Quelltext, nur in den Einstellungen bzw. im Einrichtungslink.
-- Test: `node test/fahrtenbuch.js`.
+- Test: `node test/fahrtenbuch.js` (lokaler Teil und Firmenablage gegen `test/mock-gas.js`).
 
 ## Frontend (`index.html`)
 
@@ -77,7 +91,15 @@ Eigene kleine App im selben Repo, unabhängig von der Spesen-App (kein Backend, 
   `MODEL` (optional). Vor einem Modellwechsel in den Anthropic-Docs prüfen, welches
   günstige Modell aktuell ist.
 - Von Hand auszuführen: `einrichten`, `zugangscodeAnzeigen`, `zugangscodeErneuern`.
-- `doPost`-Aktionen: `ping`, `list`, `save`, `delete`, `image`, `scan`.
+- `doPost`-Aktionen: `ping`, `list`, `save`, `delete`, `image`, `scan`; für das
+  Fahrtenbuch `fahrten` (Liste), `fahrtSave`, `fahrtDelete`, `odoSave`, `fahrtenConfig`.
+- Fahrtenbuch-Blätter, beim ersten Speichern angelegt. «Fahrten», 11 Spalten: ID, Datum,
+  Ziel, Zweck, km, Ziel-ID, Status, Erfasst am (Gerät), Gespeichert am (Server), Zuletzt
+  geändert, Version. «Kilometerstand», 7 Spalten: Monat, Datum, km, Notiz, Gespeichert am
+  (Server), Zuletzt geändert, Version (eine Zeile pro Monat, Monat als Text mit Apostroph).
+  Löschen einer Fahrt nur als Status «gelöscht»; jede Änderung ins «Protokoll» («Fahrt
+  neu/geändert/gelöscht», «Kilometerstand neu/geändert»). Einstellungen des Fahrtenbuchs
+  liegen als JSON in der Skripteigenschaft `FAHRTEN_CONFIG`.
 - Tabelle, Blatt «Spesen», 20 Spalten in dieser Reihenfolge: ID, Datum, Kategorie-ID,
   Kategorie, Beschreibung, Händler, km, Betrag, Währung, Kurs, Betrag CHF, Erfasst von,
   Beleg (Drive-Datei), Beleg SHA-256, Status, Gespeichert am (Server), Zuletzt geändert,

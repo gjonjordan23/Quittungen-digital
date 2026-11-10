@@ -6,6 +6,8 @@
  * - Alle Spesen stehen in der Tabelle "PMG Spesen" (Blatt "Spesen")
  * - Jede Änderung wird im Blatt "Protokoll" festgehalten, nichts wird überschrieben
  * - Jedes Foto bekommt eine SHA-256-Prüfsumme; ein Austausch wäre feststellbar
+ * - Das Fahrtenbuch (fahrtenbuch/) speichert in dieselbe Tabelle: Blätter "Fahrten" und
+ *   "Kilometerstand". Sie werden beim ersten Speichern angelegt.
  *
  * Einrichtung: einmal die Funktion "einrichten" ausführen (siehe Anleitung).
  */
@@ -100,6 +102,11 @@ function doPost(e) {
       case "delete": return out_(withLock_(() => deleteItem_(req)));
       case "image":  return out_({ ok:true, data: getImage_(req.id) });
       case "scan":   return out_({ ok:true, result: scan_(req.image, req.categories) });
+      case "fahrten":       return out_(fahrtenList_());
+      case "fahrtSave":     return out_(withLock_(() => fahrtSave_(req)));
+      case "fahrtDelete":   return out_(withLock_(() => fahrtDelete_(req)));
+      case "odoSave":       return out_(withLock_(() => odoSave_(req)));
+      case "fahrtenConfig": return out_(withLock_(() => fahrtenConfig_(req)));
       default:       return out_({ ok:false, error:"unknown_action" });
     }
   } catch (err) {
@@ -191,6 +198,200 @@ function getImage_(id) {
   if (!fileId) throw new Error("kein Beleg");
   const blob = DriveApp.getFileById(fileId).getBlob();
   return "data:" + (blob.getContentType() || "image/jpeg") + ";base64," + Utilities.base64Encode(blob.getBytes());
+}
+
+/* ================================================================ Fahrtenbuch */
+
+// Eigene Blätter in derselben Tabelle. Neue Spalten nur hinten anhängen.
+const FB_HEAD = ["ID", "Datum", "Ziel", "Zweck", "km", "Ziel-ID", "Status",
+  "Erfasst am (Gerät)", "Gespeichert am (Server)", "Zuletzt geändert", "Version"];
+const F = { id:0, date:1, dest:2, purpose:3, km:4, presetId:5, status:6, clientTs:7, created:8, updated:9, version:10 };
+const ODO_HEAD = ["Monat", "Datum", "km", "Notiz", "Gespeichert am (Server)", "Zuletzt geändert", "Version"];
+const O = { month:0, date:1, km:2, note:3, created:4, updated:5, version:6 };
+const FB_BUSINESS = ["date", "dest", "purpose", "km"];
+
+function fbBook_() {
+  const id = PROPS.getProperty("SHEET_ID");
+  if (!id) throw new Error("Ablage nicht eingerichtet – Funktion 'einrichten' ausführen");
+  return SpreadsheetApp.openById(id);
+}
+
+/** Blatt holen; fehlt es, mit Titelzeile anlegen (nur beim Speichern, also unter LockService). */
+function fbSheet_(name, head) {
+  const ss = fbBook_();
+  let sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.appendRow(head);
+    sh.setFrozenRows(1);
+    sh.getRange(1, 1, 1, head.length).setFontWeight("bold");
+  }
+  return sh;
+}
+
+function fbRows_(name) {
+  const sh = fbBook_().getSheetByName(name);
+  if (!sh || sh.getLastRow() < 2) return [];
+  return sh.getDataRange().getValues().slice(1);
+}
+
+function fbMs_(v) {
+  if (v instanceof Date) return v.getTime();
+  const n = Date.parse(String(v || ""));
+  return isFinite(n) ? n : 0;
+}
+
+function fbMonth_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, TZ, "yyyy-MM-dd").slice(0, 7);
+  return String(v || "").replace(/^'/, "").slice(0, 7);
+}
+
+function fbTrip_(r) {
+  return {
+    id: String(r[F.id]), date: fmtDate_(r[F.date]), dest: String(r[F.dest]), purpose: String(r[F.purpose]),
+    km: Number(r[F.km]) || 0, presetId: String(r[F.presetId] || ""), status: String(r[F.status] || "aktiv"),
+    clientRaw: r[F.clientTs], createdAt: fbMs_(r[F.clientTs]), createdRaw: r[F.created],
+    version: Number(r[F.version]) || 1
+  };
+}
+function fbTripClient_(t) {
+  return { id:t.id, date:t.date, dest:t.dest, purpose:t.purpose, km:t.km, presetId:t.presetId, createdAt:t.createdAt, version:t.version };
+}
+function fbTripPick_(t) {
+  const r = {};
+  FB_BUSINESS.forEach(k => r[k] = t[k] == null ? "" : t[k]);
+  return r;
+}
+
+function fbOdo_(r) {
+  return {
+    month: fbMonth_(r[O.month]), date: fmtDate_(r[O.date]), km: Number(r[O.km]) || 0, note: String(r[O.note] || ""),
+    createdRaw: r[O.created], version: Number(r[O.version]) || 1
+  };
+}
+function fbOdoClient_(o) { return { month:o.month, date:o.date, km:o.km, note:o.note }; }
+
+function fahrtenList_() {
+  const trips = fbRows_("Fahrten").filter(r => r[F.id] && r[F.status] !== "gelöscht").map(r => fbTripClient_(fbTrip_(r)));
+  const odo = fbRows_("Kilometerstand").filter(r => r[O.month]).map(r => fbOdoClient_(fbOdo_(r)));
+  let config = null;
+  try { config = JSON.parse(PROPS.getProperty("FAHRTEN_CONFIG") || "null"); } catch (err) { config = null; }
+  return { ok:true, trips: trips, odo: odo, config: config };
+}
+
+function fahrtSave_(req) {
+  const t = req.trip || {};
+  const it = {
+    id: txt_(t.id, 40, true),
+    date: String(t.date || "").slice(0, 10),
+    dest: txt_(t.dest, 120),
+    purpose: txt_(t.purpose, 200),
+    km: Math.round(Number(t.km)),
+    presetId: txt_(t.presetId, 40, true)
+  };
+  const editor = txt_(req.wer || "Fahrtenbuch", 60);
+  if (!it.id) throw new Error("ID fehlt");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(it.date)) throw new Error("Datum ungültig");
+  if (!(it.km > 0) || it.km > 100000) throw new Error("km ungültig");
+  if (!norm_(it.dest)) throw new Error("Ziel fehlt");
+
+  const sh = fbSheet_("Fahrten", FB_HEAD);
+  const rowIdx = findRow_(sh, it.id);
+  const now = new Date();
+  let old = null;
+  if (rowIdx > 0) {
+    old = fbTrip_(sh.getRange(rowIdx, 1, 1, FB_HEAD.length).getValues()[0]);
+    if (old.status === "gelöscht") throw new Error("Eintrag wurde bereits gelöscht");
+  }
+  const changed = !old || FB_BUSINESS.some(k => norm_(old[k]) !== norm_(it[k]));
+  if (!changed) return { ok:true, trip: fbTripClient_(old) };
+
+  const ms = Number(t.createdAt);
+  const clientTs = old ? old.clientRaw : new Date(ms > 0 ? ms : now.getTime()).toISOString();
+  const version = old ? (old.version || 1) + 1 : 1;
+  const row = [it.id, it.date, it.dest, it.purpose, it.km, it.presetId, "aktiv",
+    clientTs, old ? old.createdRaw : now, now, version];
+  if (rowIdx > 0) sh.getRange(rowIdx, 1, 1, FB_HEAD.length).setValues([row]);
+  else sh.appendRow(row);
+
+  log_(old ? "Fahrt geändert" : "Fahrt neu", it.id, editor,
+       old ? JSON.stringify(fbTripPick_(old)) : "", JSON.stringify(fbTripPick_(it)));
+
+  const saved = fbTrip_(sh.getRange(rowIdx > 0 ? rowIdx : sh.getLastRow(), 1, 1, FB_HEAD.length).getValues()[0]);
+  return { ok:true, trip: fbTripClient_(saved) };
+}
+
+/** Löschen nur als Status «gelöscht»; die Zeile bleibt (Fahrtenbuch als Beleg). */
+function fahrtDelete_(req) {
+  const id = String(req.id || "");
+  const sh = fbBook_().getSheetByName("Fahrten");
+  if (!sh) return { ok:true };
+  const rowIdx = findRow_(sh, id);
+  if (rowIdx < 0) return { ok:true };
+  const old = fbTrip_(sh.getRange(rowIdx, 1, 1, FB_HEAD.length).getValues()[0]);
+  if (old.status === "gelöscht") return { ok:true };
+  sh.getRange(rowIdx, F.status + 1).setValue("gelöscht");
+  sh.getRange(rowIdx, F.updated + 1).setValue(new Date());
+  sh.getRange(rowIdx, F.version + 1).setValue((old.version || 1) + 1);
+  log_("Fahrt gelöscht", id, txt_(req.wer || "Fahrtenbuch", 60), JSON.stringify(fbTripPick_(old)), "");
+  return { ok:true };
+}
+
+/** Ein Kilometerstand pro Monat. Eine Korrektur überschreibt die Zeile und steht im Protokoll. */
+function odoSave_(req) {
+  const o = req.odo || {};
+  const month = String(o.month || "");
+  const km = Math.round(Number(o.km));
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error("Monat ungültig");
+  if (!(km >= 0) || km > 5000000) throw new Error("Kilometerstand ungültig");
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(o.date || "")) ? String(o.date) : month + "-01";
+  const note = txt_(o.note, 200);
+  const editor = txt_(req.wer || "Fahrtenbuch", 60);
+
+  const sh = fbSheet_("Kilometerstand", ODO_HEAD);
+  const last = sh.getLastRow();
+  let rowIdx = -1;
+  if (last >= 2) {
+    const months = sh.getRange(2, 1, last - 1, 1).getValues();
+    for (let i = 0; i < months.length; i++) if (fbMonth_(months[i][0]) === month) { rowIdx = i + 2; break; }
+  }
+  const now = new Date();
+  let old = null;
+  if (rowIdx > 0) {
+    old = fbOdo_(sh.getRange(rowIdx, 1, 1, ODO_HEAD.length).getValues()[0]);
+    if (old.km === km && old.date === date && norm_(old.note) === norm_(note)) return { ok:true, odo: fbOdoClient_(old) };
+  }
+  // Apostroph: Sheets soll "2026-11" als Text behalten und nicht in ein Datum umwandeln
+  const row = ["'" + month, date, km, note, old ? old.createdRaw : now, now, old ? (old.version || 1) + 1 : 1];
+  if (rowIdx > 0) sh.getRange(rowIdx, 1, 1, ODO_HEAD.length).setValues([row]);
+  else sh.appendRow(row);
+  log_(old ? "Kilometerstand geändert" : "Kilometerstand neu", month, editor,
+       old ? JSON.stringify({ date: old.date, km: old.km }) : "", JSON.stringify({ date: date, km: km }));
+  return { ok:true, odo: { month: month, date: date, km: km, note: norm_(note) } };
+}
+
+/** Einstellungen des Fahrtenbuchs (Fahrzeug, Ziele, Ansätze) für ein neues Handy. Keine Geschäftsdaten. */
+function fahrtenConfig_(req) {
+  const c = req.config || {};
+  const s = v => String(v == null ? "" : v);
+  const clean = {
+    vehicle: s(c.vehicle).slice(0, 80), company: s(c.company).slice(0, 80),
+    start: s(c.start).slice(0, 80), hint: s(c.hint).slice(0, 300), rates: {}, presets: []
+  };
+  Object.keys(c.rates || {}).forEach(y => {
+    const v = Number(c.rates[y]);
+    if (/^\d{4}$/.test(y) && v >= 0 && v <= 5) clean.rates[y] = Math.round(v * 100) / 100;
+  });
+  (Array.isArray(c.presets) ? c.presets : []).slice(0, 30).forEach(p => {
+    if (!p || !s(p.name).trim()) return;
+    const km = Math.round(Number(p.km));
+    clean.presets.push({ id: txt_(p.id, 40, true), name: s(p.name).slice(0, 80), purpose: s(p.purpose).slice(0, 80),
+      km: km > 0 && km <= 100000 ? km : null });
+  });
+  const json = JSON.stringify(clean);
+  if (json.length > 8500) throw new Error("Einstellungen zu gross");
+  PROPS.setProperty("FAHRTEN_CONFIG", json);
+  return { ok:true, config: clean };
 }
 
 /* ================================================================ KI-Erkennung */
