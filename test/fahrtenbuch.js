@@ -23,6 +23,14 @@ const server = http.createServer((req, res) => {
   res.end(fs.readFileSync(file));
 });
 
+// Tipp auf ein Ziel; fragt die App wegen gleichem Ziel am gleichen Tag nach, ein zweiter Tipp bestätigt
+async function tapTile(pg, sel) {
+  await pg.locator(sel).click();
+  if (!(await pg.locator("#toast").isHidden()) && (await pg.locator("#toast-msg").textContent()).includes("schon erfasst")) {
+    await pg.waitForTimeout(1600);
+    await pg.locator(sel).click();
+  }
+}
 (async () => {
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = "http://127.0.0.1:" + server.address().port + "/fahrtenbuch/";
@@ -73,6 +81,10 @@ const server = http.createServer((req, res) => {
   // ---- 5. Rückgängig
   await page.waitForTimeout(1600);
   await page.locator(".tile[data-p='1']").click();
+  ok((await page.locator(".trip").count()) === 2 && (await page.locator("#toast-msg").textContent()).includes("schon erfasst"), "gleiches Ziel am gleichen Tag: erst Rückfrage, keine zweite Fahrt");
+  await page.waitForTimeout(1600);
+  await page.locator(".tile[data-p='1']").click();
+  ok((await page.locator(".trip").count()) === 3, "zweiter Tipp erfasst die zweite Fahrt");
   await page.locator("#toast-undo").click();
   ok((await page.locator(".trip").count()) === 2, "Rückgängig entfernt die letzte Fahrt");
 
@@ -202,7 +214,7 @@ const server = http.createServer((req, res) => {
 
   // ---- A: zuerst nur lokal, dann verbinden
   const A = await device(app + "#einrichten=" + b64u(setup));
-  await A.pg.locator(".tile[data-p='0']").click();
+  await tapTile(A.pg, ".tile[data-p='0']");
   await A.pg.locator("#t-other").click();
   await A.pg.locator("#t-dest").fill("=Notariat");
   await A.pg.locator("#t-purpose").fill("Unterschrift");
@@ -242,7 +254,7 @@ const server = http.createServer((req, res) => {
 
   // ---- neue Fahrt, Ändern, Löschen
   await A.pg.waitForTimeout(1600);
-  await A.pg.locator(".tile[data-p='0']").click();
+  await tapTile(A.pg, ".tile[data-p='0']");
   ok(await waitRows("Fahrten", 3), "neue Fahrt landet sofort in der Ablage");
   await statusIs(A.pg, "In der Ablage gespeichert");
   await A.pg.locator(".trip").first().click();
@@ -284,7 +296,7 @@ const server = http.createServer((req, res) => {
 
   // ---- ohne Netz erfassen, später senden
   srv.api.offline = true;
-  await B.pg.locator(".tile[data-p='0']").click();
+  await tapTile(B.pg, ".tile[data-p='0']");
   ok(await statusIs(B.pg, "1 ausstehend"), "ohne Netz: «1 ausstehend»");
   ok((await B.pg.locator(".trip").count()) === 3 && sheetRows("Fahrten").length === 3, "ohne Netz: Fahrt bleibt auf dem Gerät");
   await B.pg.reload();

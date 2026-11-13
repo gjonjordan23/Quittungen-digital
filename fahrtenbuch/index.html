@@ -532,7 +532,18 @@ function logTrip(p,km){
   setDate("today");
   saveTrip(t);
 }
-function onTile(p){if(!(p.km>0)){openKm(p);return;}logTrip(p,p.km);}
+var dupArm=null;
+/* Gleiches Ziel am gleichen Tag schon erfasst: erst ein zweiter Tipp innert 6 s erfasst nochmals */
+function onTile(p){
+  if(!(p.km>0)){openKm(p);return;}
+  var d=selDate(),dup=D.trips.some(function(t){return t.presetId===p.id&&t.date===d;});
+  if(dup&&!(dupArm&&dupArm.id===p.id&&dupArm.d===d&&Date.now()-dupArm.at<6000)){
+    dupArm={id:p.id,d:d,at:Date.now()};
+    toast(fmtDate(d)+" schon erfasst: "+p.name+". Nochmals tippen, um eine zweite Fahrt zu erfassen.");
+    return;
+  }
+  dupArm=null;logTrip(p,p.km);
+}
 function openKm(p){
   kmPreset=p;$("km-title").textContent=p.name;$("km-input").value="";
   $("dlg-km").showModal();setTimeout(function(){$("km-input").focus();},50);
@@ -756,7 +767,7 @@ function mergeBackup(v){
 /* ---------- Hinweis unten ---------- */
 function toast(msg,undo){
   var el=$("toast");$("toast-msg").textContent=msg;$("toast-undo").hidden=!undo;el.hidden=false;
-  clearTimeout(toastTimer);toastTimer=setTimeout(function(){el.hidden=true;if(undo)lastSaved=null;},undo?7000:3600);
+  clearTimeout(toastTimer);toastTimer=setTimeout(function(){el.hidden=true;if(undo)lastSaved=null;},undo?15000:5000);
 }
 function showText(title,note,txt){$("exp-title").textContent=title;$("exp-note").textContent=note;$("exp-text").value=txt;$("dlg-exp").showModal();}
 
